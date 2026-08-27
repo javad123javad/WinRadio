@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>WinRadio — Main Dashboard (key screen)</title>
+<style>
+/*
+  Governs: EXPERIENCE.md — Information Architecture (Main Dashboard row),
+  Component Patterns (Station row, Info Tile shell, Transport bar, Sleep Timer
+  control, Nav icon-button), State Patterns (Sleep Timer armed), Key Flows
+  (Flow 1, steps 1 and 6). Tokens: DESIGN.md colors/typography/rounded/spacing/components.
+  Canonical state shown: Favorites rail, "Alternative Radio" playing, Sleep
+  Timer armed (badge visible), all three Info Tiles healthy.
+*/
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #3a3a3f;
+  font-family: 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+.window {
+  width: 1040px;
+  background: #101012;
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+.titlebar {
+  height: 32px;
+  background: #0a0a0c;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  color: #9a9aa2;
+  font-size: 12px;
+  gap: 8px;
+}
+.titlebar .dot { width: 10px; height: 10px; border-radius: 9999px; background: #2a2a2f; }
+.navbar {
+  display: flex;
+  gap: 16px;
+  padding: 16px 20px 8px 20px;
+  background: #101012;
+}
+.nav-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 56px;
+}
+.nav-btn .circle {
+  width: 48px; height: 48px;
+  border-radius: 9999px;
+  border: 1px solid #2a2a2f;
+  display: flex; align-items: center; justify-content: center;
+  color: #f5f5f7;
+  font-size: 16px;
+}
+.nav-btn.active .circle { background: rgba(124,92,255,0.18); border-color: #7c5cff; }
+.nav-btn span { font-size: 11px; color: #9a9aa2; }
+.body { display: flex; }
+.rail {
+  width: 280px;
+  padding: 16px;
+  background: #101012;
+}
+.rail h2 { font-size: 14px; color: #f5f5f7; font-weight: 600; margin-bottom: 12px; }
+.station-row {
+  display: flex; align-items: center; gap: 8px;
+  height: 56px;
+  background: #18181b;
+  border-radius: 2px;
+  padding: 0 10px;
+  margin-bottom: 6px;
+}
+.station-row.active { background: #212126; }
+.reorder { display: flex; flex-direction: column; gap: 1px; color: #9a9aa2; font-size: 9px; line-height: 1; cursor: default; }
+.play-icon { width: 22px; height: 22px; border-radius: 9999px; border: 1px solid #5aa9f0; display: flex; align-items: center; justify-content: center; color: #5aa9f0; font-size: 10px; }
+.station-name { flex: 1; color: #5aa9f0; font-size: 14px; font-weight: 500; }
+.star { color: #7c5cff; font-size: 14px; }
+.dashboard { flex: 1; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+.now-playing { background: #18181b; border-radius: 2px; padding: 24px; text-align: center; }
+.art { width: 96px; height: 96px; border-radius: 9999px; background: radial-gradient(circle at 35% 35%, #5aa9f0, #101012 70%); margin: 0 auto 16px; }
+.station-title { font-size: 32px; font-weight: 300; color: #f5f5f7; }
+.track-title { font-size: 14px; color: #9a9aa2; margin-top: 4px; }
+.transport {
+  background: #18181b; border-radius: 2px; padding: 14px 20px;
+  display: flex; align-items: center; gap: 16px;
+}
+.playbtn { width: 40px; height: 40px; border-radius: 9999px; border: 1px solid #7c5cff; color: #7c5cff; display: flex; align-items: center; justify-content: center; }
+.elapsed { color: #9a9aa2; font-size: 12px; width: 48px; }
+.slider-track { flex: 1; height: 4px; background: #2a2a2f; border-radius: 2px; position: relative; }
+.slider-track .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 55%; background: #7c5cff; border-radius: 2px; }
+.mute { color: #f5f5f7; font-size: 14px; }
+.vol-track { width: 90px; height: 4px; background: #2a2a2f; border-radius: 2px; position: relative; }
+.vol-track .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 65%; background: #7c5cff; border-radius: 2px; }
+.sleep-icon { position: relative; width: 32px; height: 32px; border-radius: 9999px; border: 1px solid #2a2a2f; display: flex; align-items: center; justify-content: center; color: #f5f5f7; font-size: 13px; }
+.sleep-icon .badge { position: absolute; top: -2px; right: -2px; width: 8px; height: 8px; border-radius: 9999px; background: #7c5cff; }
+.tiles { display: flex; gap: 16px; }
+.tile { flex: 1; background: #18181b; border-radius: 2px; padding: 12px; }
+.tile h3 { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: #9a9aa2; font-weight: 600; margin-bottom: 8px; }
+.tile .big { color: #f5f5f7; font-size: 14px; margin-bottom: 4px; }
+.tile .small { color: #9a9aa2; font-size: 12px; }
+.map-fake { height: 60px; border-radius: 2px; background: repeating-linear-gradient(45deg, #212126, #212126 6px, #18181b 6px, #18181b 12px); margin-top: 8px; }
+.forecast { display: flex; gap: 8px; margin-top: 8px; }
+.forecast div { flex: 1; text-align: center; font-size: 10px; color: #9a9aa2; }
+.forecast .ico { width: 16px; height: 16px; border-radius: 9999px; background: #2a2a2f; margin: 0 auto 4px; }
+</style>
+</head>
+<body>
+<div class="window">
+  <div class="titlebar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>WinRadio</div>
+  <div class="navbar">
+    <div class="nav-btn active"><div class="circle">★</div><span>Favorites</span></div>
+    <div class="nav-btn"><div class="circle">▽</div><span>Filter</span></div>
+    <div class="nav-btn"><div class="circle">⌕</div><span>Search</span></div>
+    <div class="nav-btn"><div class="circle">⚙</div><span>Settings</span></div>
+  </div>
+  <div class="body">
+    <div class="rail">
+      <h2>Favorites (4)</h2>
+      <div class="station-row active">
+        <div class="reorder">▲▼</div>
+        <div class="play-icon">❚❚</div>
+        <div class="station-name">Alternative Radio</div>
+        <div class="star">★</div>
+      </div>
+      <div class="station-row">
+        <div class="reorder">▲▼</div>
+        <div class="play-icon">▶</div>
+        <div class="station-name">Azur 70</div>
+        <div class="star">★</div>
+      </div>
+      <div class="station-row">
+        <div class="reorder">▲▼</div>
+        <div class="play-icon">▶</div>
+        <div class="station-name">Air 80</div>
+        <div class="star">★</div>
+      </div>
+      <div class="station-row">
+        <div class="reorder">▲▼</div>
+        <div class="play-icon">▶</div>
+        <div class="station-name">Always 80s</div>
+        <div class="star">★</div>
+      </div>
+    </div>
+    <div class="dashboard">
+      <div class="now-playing">
+        <div class="art"></div>
+        <div class="station-title">Alternative Radio</div>
+        <div class="track-title">Alternative Radio African — MP3, BE</div>
+      </div>
+      <div class="transport">
+        <div class="playbtn">❚❚</div>
+        <div class="elapsed">00:21</div>
+        <div class="slider-track"><div class="fill"></div></div>
+        <div class="mute">🔊</div>
+        <div class="vol-track"><div class="fill"></div></div>
+        <div class="sleep-icon">☾<span class="badge"></span></div>
+      </div>
+      <div class="tiles">
+        <div class="tile">
+          <h3>Location</h3>
+          <div class="big">Brussels, BE</div>
+          <div class="map-fake"></div>
+        </div>
+        <div class="tile">
+          <h3>Weather — Brussels</h3>
+          <div class="big">2°C, 95%, 1003mb</div>
+          <div class="forecast">
+            <div><div class="ico"></div>Su</div>
+            <div><div class="ico"></div>Mo</div>
+            <div><div class="ico"></div>Tu</div>
+            <div><div class="ico"></div>We</div>
+            <div><div class="ico"></div>Th</div>
+          </div>
+        </div>
+        <div class="tile">
+          <h3>Stream Info</h3>
+          <div class="big">MP3 · 128kbps</div>
+          <div class="small">BE, Brussels</div>
+          <div class="small">IP 31.12.64.60</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

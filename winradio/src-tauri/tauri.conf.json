@@ -1,0 +1,72 @@
+{
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devPath": "http://localhost:1420",
+    "distDir": "../dist"
+  },
+  "package": {
+    "productName": "WinRadio",
+    "version": "0.1.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "dialog": {
+        "all": true
+      },
+      "fs": {
+        "all": true
+      },
+      "shell": {
+        "all": true,
+        "open": true
+      },
+      "notification": {
+        "all": true
+      },
+      "globalShortcut": {
+        "all": true
+      },
+      "window": {
+        "all": true
+      }
+    },
+    "bundle": {
+      "active": true,
+      "targets": ["nsis"],
+      "identifier": "com.winradio.app",
+      "icon": [
+        "icons/icon.ico"
+      ],
+      "windows": {
+        "webviewInstallMode": {
+          "type": "embedBootstrapper"
+        },
+        "allowDowngrades": true
+      }
+    },
+    "security": {
+      "csp": "default-src 'self' data: https: http:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: http:;"
+    },
+    "windows": [
+      {
+        "title": "WinRadio",
+        "width": 1000,
+        "height": 700,
+        "minWidth": 800,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true,
+        "decorations": true,
+        "visible": true,
+        "skipTaskbar": false
+      }
+    ],
+    "systemTray": {
+      "iconPath": "icons/tray-icon.png",
+      "iconAsTemplate": true,
+      "menuOnLeftClick": true
+    }
+  }
+}

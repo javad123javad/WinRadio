@@ -1,0 +1,32 @@
+[package]
+name = "winradio"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77.2"
+
+[features]
+custom-protocol = []
+
+[build-dependencies]
+tauri-build = { version = "1.5", features = [] }
+
+[dependencies]
+tauri = { version = "1.5", features = [ "notification-all", "shell-all", "fs-all", "window-all", "global-shortcut-all", "dialog-all", "windows7-compat", "system-tray", "global-shortcut", "notification", "dialog"] }
+rodio = { version = "0.19", features = ["symphonia-all"] }
+symphonia = { version = "0.6", features = ["mp3", "aac", "vorbis", "flac", "ogg"] }
+stream-download = { version = "0.5", features = ["reqwest"] }
+reqwest = { version = "0.12", features = ["blocking", "rustls-tls", "stream"] }
+cpal = "0.15"
+# tauri-plugin-store not available for tauri v1, using custom store
+lame-sys = "0.1"
+hound = "3.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+tokio = { version = "1.38", features = ["rt-multi-thread", "time", "sync", "macros"] }
+once_cell = "1.19"
+parking_lot = "0.12"
+bytes = "1.5"
+chrono = "0.4"
+dirs = "5.0"
+futures = "0.3"

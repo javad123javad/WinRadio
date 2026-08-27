@@ -1,0 +1,16 @@
+# Rust
+/winradio/src-tauri/target/
+
+# Node
+/winradio/node_modules/
+/winradio/dist/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store
+
+# BMad render cache
+/_bmad/render/

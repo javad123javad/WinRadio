@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>WinRadio — Search state (key screen)</title>
+<style>
+/*
+  Governs: EXPERIENCE.md — Information Architecture (Search results row),
+  Component Patterns (Search field, Filter control, Station row),
+  State Patterns ("No search results" — both zero-match and offline variants).
+  Canonical state shown: active search "jazz" with a genre filter chip applied,
+  results populating the rail; second panel shows the offline-vs-zero-match
+  copy distinction side by side since both share the same visual slot.
+*/
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #3a3a3f;
+  font-family: 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+  gap: 24px;
+}
+.window {
+  width: 340px;
+  background: #101012;
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+.titlebar { height: 32px; background: #0a0a0c; display: flex; align-items: center; padding: 0 12px; color: #9a9aa2; font-size: 12px; gap: 8px; }
+.titlebar .dot { width: 10px; height: 10px; border-radius: 9999px; background: #2a2a2f; }
+.panel { padding: 16px; }
+.search-input {
+  background: #18181b; border: 1px solid #7c5cff; border-radius: 2px;
+  padding: 10px 12px; color: #f5f5f7; font-size: 14px; margin-bottom: 10px;
+}
+.chips { display: flex; gap: 6px; margin-bottom: 14px; }
+.chip { background: #212126; color: #9a9aa2; font-size: 11px; padding: 4px 10px; border-radius: 9999px; }
+.chip b { color: #f5f5f7; font-weight: 500; }
+h2 { font-size: 13px; color: #9a9aa2; font-weight: 600; margin-bottom: 10px; }
+.station-row { display: flex; align-items: center; gap: 8px; height: 52px; background: #18181b; border-radius: 2px; padding: 0 10px; margin-bottom: 6px; }
+.play-icon { width: 20px; height: 20px; border-radius: 9999px; border: 1px solid #5aa9f0; display: flex; align-items: center; justify-content: center; color: #5aa9f0; font-size: 9px; }
+.station-name { flex: 1; color: #5aa9f0; font-size: 13px; font-weight: 500; }
+.star { color: #4a4a52; font-size: 13px; }
+.caption { text-align: center; font-size: 11px; color: #9a9aa2; padding: 8px 0; }
+.state-panel { width: 300px; background: #101012; border-radius: 6px; padding: 16px; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+.state-panel h3 { color: #f5f5f7; font-size: 13px; margin-bottom: 10px; }
+.msg-box { background: #18181b; border-radius: 2px; padding: 20px 14px; text-align: center; margin-bottom: 12px; }
+.msg-box .text { color: #f5f5f7; font-size: 13px; }
+.msg-box .label { color: #9a9aa2; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+  <div class="window">
+    <div class="titlebar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>WinRadio</div>
+    <div class="panel">
+      <div class="search-input">jazz</div>
+      <div class="chips"><span class="chip">Genre: <b>Jazz</b> ✕</span></div>
+      <h2>Results (12)</h2>
+      <div class="station-row"><div class="play-icon">▶</div><div class="station-name">Jazz FM Brussels</div><div class="star">☆</div></div>
+      <div class="station-row"><div class="play-icon">▶</div><div class="station-name">Smooth Jazz 24/7</div><div class="star">☆</div></div>
+      <div class="station-row"><div class="play-icon">▶</div><div class="station-name">Late Night Jazz</div><div class="star">☆</div></div>
+      <div class="caption">Click any row to preview — favorite (★) separately.</div>
+    </div>
+  </div>
+  <div class="state-panel">
+    <h3>Same visual slot, two distinct messages</h3>
+    <div class="msg-box">
+      <div class="label">Zero matches</div>
+      <div class="text">No stations found for 'zzyx'.</div>
+    </div>
+    <div class="msg-box">
+      <div class="label">Offline</div>
+      <div class="text">Can't reach the station directory — check your connection.</div>
+    </div>
+  </div>
+</body>
+</html>
