@@ -1,6 +1,9 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api'
+import { listen } from '@tauri-apps/api/event'
+import type { Station } from './stations'
+import { useSettingsStore } from './settings'
 
 export interface Metadata {
   title: string
@@ -9,38 +12,85 @@ export interface Metadata {
   artworkUrl: string
 }
 
-export interface Station {
-  id: string
-  name: string
-  url: string
-  faviconUrl?: string
-  homepage?: string
-  category?: string
-  isFavorite: boolean
-  addedAt: number
-}
+const emptyMetadata = (): Metadata => ({ title: '', artist: '', album: '', artworkUrl: '' })
 
+// Read-model only: every field here is set from a `listen()` handler tied to
+// a Rust-pushed event, never optimistically after an `invoke()` call, per
+// spec-1-1's event model. The one exception is `volume`, which is live
+// slider UI state (FR-12) with no backing event of its own.
 export const usePlaybackStore = defineStore('playback', () => {
   const isPlaying = ref(false)
   const currentStation = ref<Station | null>(null)
   const volume = ref(0.7)
-  const metadata = ref<Metadata>({ title: '', artist: '', album: '', artworkUrl: '' })
-  const position = ref(0)
-  const duration = ref(0)
-  const eqBands = ref<number[]>(new Array(10).fill(0))
-  const sleepTimerMinutes = ref(0)
-  const sleepTimerEndsAt = ref(0)
-  const isRecording = ref(false)
-  const recordingPath = ref('')
+  const isMuted = ref(false)
+  const volumeBeforeMute = ref(0.7)
+  const metadata = ref<Metadata>(emptyMetadata())
+  const reconnecting = ref(false)
+  const reconnectAttempt = ref(0)
+  const errorMessage = ref<string | null>(null)
+  // Local, cosmetic-only clock for the informational elapsed-time display
+  // (EXPERIENCE.md: "position display is elapsed-time-only"). Never used to
+  // poll backend state — internet radio streams have no seek/duration.
+  const playStartedAt = ref<number | null>(null)
 
-  const play = async (url: string, station?: Station) => {
+  let listenersReady = false
+
+  // Only flips to `true` once every `listen()` call below has actually
+  // resolved. If any of them throws (e.g. a transient IPC hiccup during
+  // startup), the flag is reset so a later `initListeners()` call retries
+  // registration instead of permanently no-op'ing (previously the flag was
+  // set up front, so a partial failure here silently dropped whichever
+  // events hadn't registered yet, for the rest of the session).
+  const initListeners = async () => {
+    if (listenersReady) return
     try {
-      await invoke('play', { url })
-      isPlaying.value = true
-      if (station) currentStation.value = station
-      metadata.value = { title: '', artist: '', album: '', artworkUrl: '' }
-      position.value = 0
-      duration.value = 0
+      await listen<Station>('play', (event) => {
+        currentStation.value = event.payload
+        isPlaying.value = true
+        reconnecting.value = false
+        errorMessage.value = null
+        metadata.value = emptyMetadata()
+        playStartedAt.value = Date.now()
+      })
+
+      await listen('stop', () => {
+        isPlaying.value = false
+        reconnecting.value = false
+        // Nothing is playing any more — a stale track title left over from
+        // the last station would otherwise linger in the UI.
+        metadata.value = emptyMetadata()
+        playStartedAt.value = null
+      })
+
+      await listen<{ attempt: number }>('reconnecting', (event) => {
+        reconnecting.value = true
+        reconnectAttempt.value = event.payload.attempt
+        errorMessage.value = null
+      })
+
+      await listen<{ reason: string }>('playback-error', (event) => {
+        isPlaying.value = false
+        reconnecting.value = false
+        errorMessage.value = event.payload.reason
+        playStartedAt.value = null
+      })
+
+      await listen<Metadata>('metadata-updated', (event) => {
+        metadata.value = event.payload
+      })
+
+      listenersReady = true
+    } catch (e) {
+      listenersReady = false
+      console.error('Registering playback listeners failed:', e)
+      throw e
+    }
+  }
+
+  const play = async (station: Station) => {
+    errorMessage.value = null
+    try {
+      await invoke('play', { station })
     } catch (e) {
       console.error('Play failed:', e)
     }
@@ -49,78 +99,52 @@ export const usePlaybackStore = defineStore('playback', () => {
   const stop = async () => {
     try {
       await invoke('stop')
-      isPlaying.value = false
-      currentStation.value = null
-      position.value = 0
-      duration.value = 0
     } catch (e) {
       console.error('Stop failed:', e)
     }
   }
 
   const setVolume = async (vol: number) => {
-    volume.value = Math.max(0, Math.min(1, vol))
+    const clamped = Math.max(0, Math.min(1, vol))
+    volume.value = clamped
     try {
-      await invoke('set_volume', { volume: volume.value })
+      await invoke('set_volume', { volume: clamped })
     } catch (e) {
       console.error('Set volume failed:', e)
     }
   }
 
-  const setEqBand = async (band: number, gainDb: number) => {
-    eqBands.value[band] = Math.max(-12, Math.min(12, gainDb))
+  const loadVolume = async () => {
     try {
-      await invoke('set_eq_band', { band, gainDb: eqBands.value[band] })
+      volume.value = await invoke<number>('get_volume')
     } catch (e) {
-      console.error('Set EQ band failed:', e)
+      console.error('Load volume failed:', e)
     }
   }
 
-  const resetEq = async () => {
-    eqBands.value.fill(0)
-    try {
-      await invoke('reset_eq')
-    } catch (e) {
-      console.error('Reset EQ failed:', e)
-    }
+  // Volume lives in the `Settings` record on the Rust side (so it can be
+  // restored on relaunch — I/O matrix: "last volume restored"), but
+  // `save_settings` replaces the whole record, so persisting it means going
+  // through the settings store. `setVolume` above only pushes the live value
+  // to the backend for immediate playback — without this, dragging the
+  // transport-bar slider alone never survived a restart. Call this on
+  // "release" (e.g. `change`, not `input`), matching "persists on release"
+  // (FR-12) rather than writing to disk on every drag tick.
+  const persistVolume = async () => {
+    const settingsStore = useSettingsStore()
+    await settingsStore.saveSettings(volume.value)
   }
 
-  const updateMetadata = (data: Partial<Metadata>) => {
-    metadata.value = { ...metadata.value, ...data }
-  }
-
-  const updatePosition = (pos: number, dur: number) => {
-    position.value = pos
-    duration.value = dur
-  }
-
-  const startRecording = async (filename: string) => {
-    try {
-      const path = await invoke<string>('start_recording', { filename })
-      isRecording.value = true
-      recordingPath.value = path
-      return path
-    } catch (e) {
-      console.error('Start recording failed:', e)
-    }
-  }
-
-  const stopRecording = async () => {
-    try {
-      await invoke('stop_recording')
-      isRecording.value = false
-    } catch (e) {
-      console.error('Stop recording failed:', e)
-    }
-  }
-
-  const setSleepTimer = async (minutes: number) => {
-    sleepTimerMinutes.value = minutes
-    sleepTimerEndsAt.value = minutes > 0 ? Date.now() + minutes * 60 * 1000 : 0
-    try {
-      await invoke('set_sleep_timer', { minutes })
-    } catch (e) {
-      console.error('Set sleep timer failed:', e)
+  // Mute is its own state, not "drag to zero": muting and later unmuting
+  // restores the prior volume level exactly (EXPERIENCE.md, transport bar).
+  const toggleMute = async () => {
+    if (isMuted.value) {
+      isMuted.value = false
+      await setVolume(volumeBeforeMute.value)
+    } else {
+      volumeBeforeMute.value = volume.value
+      isMuted.value = true
+      await setVolume(0)
     }
   }
 
@@ -128,23 +152,18 @@ export const usePlaybackStore = defineStore('playback', () => {
     isPlaying,
     currentStation,
     volume,
+    isMuted,
     metadata,
-    position,
-    duration,
-    eqBands,
-    sleepTimerMinutes,
-    sleepTimerEndsAt,
-    isRecording,
-    recordingPath,
+    reconnecting,
+    reconnectAttempt,
+    errorMessage,
+    playStartedAt,
+    initListeners,
     play,
     stop,
     setVolume,
-    setEqBand,
-    resetEq,
-    updateMetadata,
-    updatePosition,
-    startRecording,
-    stopRecording,
-    setSleepTimer,
+    loadVolume,
+    persistVolume,
+    toggleMute,
   }
 })

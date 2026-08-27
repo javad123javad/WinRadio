@@ -1,55 +1,191 @@
 <template>
-  <div class="flex flex-col min-h-screen bg-gray-50 dark:bg-gray-900">
-    <header class="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 shadow-sm">
-      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div class="flex items-center justify-between h-16">
-          <h1 class="text-xl font-semibold text-gray-900 dark:text-white">WinRadio</h1>
-          <div class="flex items-center gap-4">
+  <div class="flex min-h-screen flex-col bg-surface-base">
+    <nav class="flex gap-4 px-5 pb-2 pt-4" aria-label="Primary">
+      <button
+        type="button"
+        class="flex w-14 flex-col items-center gap-1"
+        aria-label="Favorites"
+        aria-pressed="true"
+      >
+        <span class="flex h-12 w-12 items-center justify-center rounded-full border border-primary bg-primary/20 text-on-surface">
+          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z" />
+          </svg>
+        </span>
+        <span class="text-caption text-on-surface-variant">Favorites</span>
+      </button>
+
+      <button type="button" class="flex w-14 flex-col items-center gap-1 opacity-50" aria-label="Filter (coming soon)" disabled>
+        <span class="flex h-12 w-12 items-center justify-center rounded-full border border-outline text-on-surface">
+          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M4 5h16M7 12h10M10 19h4" />
+          </svg>
+        </span>
+        <span class="text-caption text-on-surface-variant">Filter</span>
+      </button>
+
+      <button type="button" class="flex w-14 flex-col items-center gap-1 opacity-50" aria-label="Search (coming soon)" disabled>
+        <span class="flex h-12 w-12 items-center justify-center rounded-full border border-outline text-on-surface">
+          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+            <circle cx="11" cy="11" r="6" />
+            <path stroke-linecap="round" d="M20 20l-4.35-4.35" />
+          </svg>
+        </span>
+        <span class="text-caption text-on-surface-variant">Search</span>
+      </button>
+
+      <button
+        type="button"
+        class="flex w-14 flex-col items-center gap-1"
+        aria-label="Settings"
+        @click="showSettings = true"
+      >
+        <span class="flex h-12 w-12 items-center justify-center rounded-full border border-outline text-on-surface">
+          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+        </span>
+        <span class="text-caption text-on-surface-variant">Settings</span>
+      </button>
+    </nav>
+
+    <div class="flex flex-1 items-start">
+      <aside class="w-rail flex-shrink-0 px-4 pb-4">
+        <h2 class="mb-3 text-body font-semibold text-on-surface">Favorites ({{ stationsStore.stations.length }})</h2>
+
+        <p
+          v-if="stationsStore.loaded && stationsStore.stations.length === 0"
+          class="text-caption text-on-surface-variant"
+        >
+          No favorites yet — search to find a station.
+        </p>
+
+        <ul>
+          <li v-for="station in stationsStore.stations" :key="station.id" class="mb-1.5">
             <button
-              @click="toggleTheme"
-              class="p-2 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
-              aria-label="Toggle theme"
+              type="button"
+              class="flex h-14 w-full items-center gap-2 rounded-sm px-2.5 text-left transition-colors"
+              :class="isCurrent(station) ? 'bg-surface-raised-high' : 'bg-surface-raised hover:bg-surface-raised-high'"
+              @click="stationsStore.playStation(station)"
             >
-              <svg v-if="isDark" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
-              </svg>
-              <svg v-else class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-              </svg>
+              <span class="flex h-[22px] w-[22px] flex-shrink-0 items-center justify-center rounded-full border border-secondary text-secondary">
+                <svg v-if="isCurrent(station) && playbackStore.isPlaying" class="h-2.5 w-2.5" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M6 5h4v14H6zm8 0h4v14h-4z" />
+                </svg>
+                <svg v-else class="h-2.5 w-2.5 translate-x-px" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              </span>
+              <span class="truncate text-label-link text-secondary">{{ station.name }}</span>
             </button>
+          </li>
+        </ul>
+      </aside>
+
+      <main class="flex flex-1 flex-col gap-4 p-5">
+        <section class="rounded-sm bg-surface-raised p-6 text-center">
+          <div class="mx-auto mb-4 h-24 w-24 rounded-full bg-surface-raised-high"></div>
+
+          <p v-if="playbackStore.currentStation" class="text-display text-on-surface">
+            {{ playbackStore.currentStation.name }}
+          </p>
+          <p v-else class="text-display text-on-surface-variant">No station selected</p>
+
+          <p v-if="playbackStore.metadata.title" class="mt-1 text-body text-on-surface-variant">
+            {{ playbackStore.metadata.title }}<span v-if="playbackStore.metadata.artist"> — {{ playbackStore.metadata.artist }}</span>
+          </p>
+          <p v-else-if="playbackStore.currentStation" class="mt-1 text-body text-on-surface-variant">
+            {{ playbackStore.currentStation.category || 'Radio' }}
+          </p>
+        </section>
+
+        <TransportBar />
+
+        <!-- Info Tile grid: reserved by layout, content lands in Epic 2. -->
+        <section class="grid grid-cols-2 gap-4 tiles:grid-cols-3">
+          <div v-for="tile in infoTiles" :key="tile" class="rounded-sm bg-surface-raised p-3">
+            <h3 class="text-label-caps uppercase text-on-surface-variant">{{ tile }}</h3>
           </div>
-        </div>
-      </div>
-    </header>
+        </section>
+      </main>
+    </div>
 
-    <main class="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6">
-      <router-view />
-    </main>
-
-    <footer class="bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700">
-      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-        <PlayerControls />
-      </div>
-    </footer>
+    <SettingsModal :show="showSettings" @close="showSettings = false" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import PlayerControls from './components/PlayerControls.vue'
+import { onMounted, ref, watch } from 'vue'
+import TransportBar from '@/components/TransportBar.vue'
+import SettingsModal from '@/components/SettingsModal.vue'
+import { useStationsStore, type Station } from '@/stores/stations'
+import { usePlaybackStore } from '@/stores/playback'
+import { useSettingsStore } from '@/stores/settings'
 
-const isDark = ref(false)
+const stationsStore = useStationsStore()
+const playbackStore = usePlaybackStore()
+const settingsStore = useSettingsStore()
 
-const toggleTheme = () => {
-  isDark.value = !isDark.value
-  document.documentElement.classList.toggle('dark', isDark.value)
-  localStorage.setItem('theme', isDark.value ? 'dark' : 'light')
+const showSettings = ref(false)
+const infoTiles = ['Location', 'Weather', 'Stream Info']
+
+const isCurrent = (station: Station) => playbackStore.currentStation?.id === station.id
+
+let systemDarkQuery: MediaQueryList | undefined
+
+// `Space` toggles play/pause when the window has focus and no text field is
+// focused (EXPERIENCE.md Accessibility Floor / Interaction Primitives).
+const isTextInputFocused = () => {
+  const el = document.activeElement
+  if (!el) return false
+  const tag = el.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.hasAttribute('contenteditable')
 }
 
-onMounted(() => {
-  const saved = localStorage.getItem('theme')
-  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-  isDark.value = saved === 'dark' || (!saved && prefersDark)
-  document.documentElement.classList.toggle('dark', isDark.value)
+const onGlobalKeydown = (event: KeyboardEvent) => {
+  if (event.code !== 'Space' || isTextInputFocused()) return
+  event.preventDefault()
+  if (playbackStore.isPlaying) {
+    playbackStore.stop()
+  } else if (playbackStore.currentStation) {
+    playbackStore.play(playbackStore.currentStation)
+  }
+}
+
+const applyTheme = () => {
+  // Dark is the default surface (DESIGN.md); "system" only switches to
+  // light when the OS explicitly prefers it.
+  const isLight =
+    settingsStore.theme === 'light' ||
+    (settingsStore.theme === 'system' && systemDarkQuery?.matches === false)
+  document.documentElement.classList.toggle('light', isLight)
+}
+
+watch(() => settingsStore.theme, applyTheme)
+
+onMounted(async () => {
+  systemDarkQuery = window.matchMedia('(prefers-color-scheme: dark)')
+  systemDarkQuery.addEventListener('change', applyTheme)
+  window.addEventListener('keydown', onGlobalKeydown)
+
+  // Listeners first so no event is missed once loading kicks off playback.
+  // `initListeners` now rejects (rather than silently no-op'ing forever) if
+  // registration partially fails, so it doesn't get to permanently block
+  // the rest of startup here — loading stations/settings/volume should
+  // still proceed even if this hiccupped.
+  try {
+    await playbackStore.initListeners()
+  } catch {
+    // Already logged inside the store; startup continues regardless.
+  }
+
+  await Promise.all([
+    stationsStore.loadStations(),
+    settingsStore.loadSettings(),
+    playbackStore.loadVolume(),
+  ])
+
+  applyTheme()
 })
 </script>

@@ -1,30 +1,34 @@
+use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use parking_lot::Mutex;
-use rodio::{Sink, OutputStream, OutputStreamHandle, Source};
-use std::io::Cursor;
-use reqwest::Client;
 use std::time::Duration;
-use hound::WavSpec;
-use serde::{Serialize, Deserialize};
 
-pub struct RadioPlayer {
-    sink: Arc<Mutex<Option<Sink>>>,
-    stream_handle: OutputStreamHandle,
-    current_url: Arc<Mutex<Option<String>>>,
-    is_playing: Arc<Mutex<bool>>,
-    volume: Arc<Mutex<f32>>,
-    eq_gains: Arc<Mutex<[f32; 10]>>,
-    metadata: Arc<Mutex<Option<Metadata>>>,
-    recorder: Arc<Mutex<Option<Recorder>>>,
-}
+use icy_metadata::{IcyHeaders, IcyMetadataReader};
+use parking_lot::Mutex;
+use rodio::{OutputStream, OutputStreamHandle, Sink};
+use std::sync::mpsc as std_mpsc;
+use serde::{Deserialize, Serialize};
+use stream_download::http::HttpStream;
+use stream_download::source::DecodeError;
+use stream_download::storage::bounded::BoundedStorageProvider;
+use stream_download::storage::memory::MemoryStorageProvider;
+use stream_download::{Settings as DownloadSettings, StreamDownload};
+use tauri::{AppHandle, Manager};
 
-struct Recorder {
-    writer: hound::WavWriter<std::io::BufWriter<std::fs::File>>,
-    spec: WavSpec,
-    path: std::path::PathBuf,
-}
+use crate::commands::Station;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Backoff schedule for reconnect attempts after a stream fails or drops:
+/// an immediate retry, then 2s/5s/10s delays before giving up (~20s budget
+/// once attempt/connect latency is included). Exposed for testing.
+pub const RETRY_DELAYS: [Duration; 4] = [
+    Duration::from_secs(0),
+    Duration::from_secs(2),
+    Duration::from_secs(5),
+    Duration::from_secs(10),
+];
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct Metadata {
     pub title: String,
     pub artist: String,
@@ -32,448 +36,615 @@ pub struct Metadata {
     pub artwork_url: String,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReconnectingPayload {
+    attempt: u32,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlaybackErrorPayload {
+    reason: String,
+}
+
+pub struct RadioPlayer {
+    stream_handle: OutputStreamHandle,
+    sink: Arc<Mutex<Option<Arc<Sink>>>>,
+    current_station: Arc<Mutex<Option<Station>>>,
+    volume: Arc<Mutex<f32>>,
+    metadata: Arc<Mutex<Option<Metadata>>>,
+    app_handle: Arc<Mutex<Option<AppHandle>>>,
+    generation: AtomicU64,
+}
+
 impl RadioPlayer {
-    pub fn new() -> Self {
-        let (_stream, stream_handle) = OutputStream::try_default().expect("Failed to create audio output stream");
-
-        Self {
-            sink: Arc::new(Mutex::new(None)),
-            stream_handle,
-            current_url: Arc::new(Mutex::new(None)),
-            is_playing: Arc::new(Mutex::new(false)),
-            volume: Arc::new(Mutex::new(0.7)),
-            eq_gains: Arc::new(Mutex::new([0.0; 10])),
-            metadata: Arc::new(Mutex::new(None)),
-            recorder: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    pub async fn play(self: Arc<Self>, url: String) -> Result<(), String> {
-        self.stop().await?;
-
-        let client = Client::builder()
-            .timeout(Duration::from_secs(10))
-            .user_agent("WinRadio/0.1")
-            .build()
-            .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
-
-        let response = client.get(&url)
-            .send()
-            .await
-            .map_err(|e| format!("Failed to connect to stream: {}", e))?;
-
-        if !response.status().is_success() {
-            return Err(format!("HTTP error: {}", response.status()));
-        }
-
-        let icy_metaint = response.headers()
-            .get("icy-metaint")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<usize>().ok());
-
-        let stream = response.bytes_stream();
-
-        let source = HttpStreamSource::new(stream, icy_metaint, self.clone());
-
-        let sink = Sink::try_new(&self.stream_handle).map_err(|e| format!("Failed to create sink: {}", e))?;
-        sink.set_volume(*self.volume.lock());
-
-        {
-            let mut current_sink = self.sink.lock();
-            *current_sink = Some(sink);
-        }
-
-        {
-            let mut current_url = self.current_url.lock();
-            *current_url = Some(url.clone());
-        }
-
-        {
-            let mut playing = self.is_playing.lock();
-            *playing = true;
-        }
-
-        let player_sink = self.sink.clone();
-        let player_playing = self.is_playing.clone();
-        let player_eq = self.eq_gains.clone();
-
-        tokio::task::spawn_blocking(move || {
-            let sink_guard = player_sink.lock();
-            if let Some(sink) = sink_guard.as_ref() {
-                let source = EqSource::new(source, player_eq.clone());
-                sink.append(source);
-                sink.sleep_until_end();
-
-                let mut playing = player_playing.lock();
-                *playing = false;
+    /// `initial_volume` seeds playback volume from persisted `Settings` at
+    /// startup (I/O matrix: "last volume restored" on relaunch).
+    pub fn new(initial_volume: f32) -> Self {
+        // `rodio::OutputStream` is `!Send`/`!Sync` (it wraps a platform audio
+        // handle), but `RadioPlayer` is shared across threads via
+        // `Arc<RadioPlayer>` and Tauri's async command state, which requires
+        // `Send + Sync`. So the stream is created and kept alive forever on a
+        // dedicated, parked OS thread; only the `Send + Sync` `OutputStreamHandle`
+        // (used to build `Sink`s) crosses back out.
+        let (tx, rx) = std_mpsc::channel();
+        std::thread::spawn(move || match OutputStream::try_default() {
+            Ok((_stream, handle)) => {
+                let _ = tx.send(Some(handle));
+                // Park forever, keeping `_stream` alive for the process lifetime.
+                loop {
+                    std::thread::park();
+                }
+            }
+            Err(_) => {
+                let _ = tx.send(None);
             }
         });
 
-        Ok(())
+        let stream_handle = rx
+            .recv()
+            .ok()
+            .flatten()
+            .expect("Failed to create audio output stream");
+
+        Self {
+            stream_handle,
+            sink: Arc::new(Mutex::new(None)),
+            current_station: Arc::new(Mutex::new(None)),
+            volume: Arc::new(Mutex::new(initial_volume.clamp(0.0, 1.0))),
+            metadata: Arc::new(Mutex::new(None)),
+            app_handle: Arc::new(Mutex::new(None)),
+            generation: AtomicU64::new(0),
+        }
     }
 
-    pub async fn stop(&self) -> Result<(), String> {
-        let mut sink_guard = self.sink.lock();
-        if let Some(sink) = sink_guard.take() {
-            sink.stop();
-        }
-
-        let mut playing = self.is_playing.lock();
-        *playing = false;
-
-        let mut current_url = self.current_url.lock();
-        *current_url = None;
-
-        let mut recorder_guard = self.recorder.lock();
-        if let Some(recorder) = recorder_guard.take() {
-            recorder.writer.finalize().map_err(|e| format!("Failed to finalize recording: {}", e))?;
-        }
-
-        Ok(())
+    pub fn set_app_handle(&self, handle: AppHandle) {
+        *self.app_handle.lock() = Some(handle);
     }
 
-    pub async fn set_volume(&self, volume: f32) -> Result<(), String> {
-        let vol = volume.clamp(0.0, 1.0);
-        {
-            let mut v = self.volume.lock();
-            *v = vol;
+    fn emit<S: Serialize + Clone>(&self, event: &str, payload: S) {
+        if let Some(handle) = self.app_handle.lock().as_ref() {
+            let _ = handle.emit_all(event, payload);
         }
-        let sink_guard = self.sink.lock();
-        if let Some(sink) = sink_guard.as_ref() {
-            sink.set_volume(vol);
-        }
-        Ok(())
     }
 
-    pub fn get_volume(&self) -> f32 {
-        *self.volume.lock()
+    fn current_generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
+    }
+
+    fn is_current_generation(&self, gen: u64) -> bool {
+        self.current_generation() == gen
     }
 
     pub fn is_playing(&self) -> bool {
-        *self.is_playing.lock()
+        self.sink.lock().is_some()
     }
 
-    pub async fn current_url(&self) -> Option<String> {
-        self.current_url.lock().clone()
-    }
-
-    pub async fn set_eq_band(&self, band: usize, gain_db: f32) -> Result<(), String> {
-        if band >= 10 {
-            return Err("Invalid band".to_string());
-        }
-        let mut eq = self.eq_gains.lock();
-        eq[band] = gain_db.clamp(-12.0, 12.0);
-        Ok(())
-    }
-
-    pub fn get_eq(&self) -> [f32; 10] {
-        *self.eq_gains.lock()
-    }
-
-    pub async fn reset_eq(&self) -> Result<(), String> {
-        let mut eq = self.eq_gains.lock();
-        *eq = [0.0; 10];
-        Ok(())
-    }
-
-    pub async fn start_recording(&self, filename: String) -> Result<String, String> {
-        let spec = WavSpec {
-            channels: 2,
-            sample_rate: 44100,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        };
-
-        let path = std::path::PathBuf::from(&filename);
-        let writer = hound::WavWriter::create(&path, spec)
-            .map_err(|e| format!("Failed to create WAV writer: {}", e))?;
-
-        let recorder = Recorder { writer, spec, path: path.clone() };
-
-        {
-            let mut rec = self.recorder.lock();
-            *rec = Some(recorder);
-        }
-
-        Ok(filename)
-    }
-
-    pub async fn stop_recording(&self) -> Result<std::path::PathBuf, String> {
-        let mut rec = self.recorder.lock();
-        if let Some(recorder) = rec.take() {
-            recorder.writer.finalize().map_err(|e| format!("Failed to finalize recording: {}", e))?;
-            Ok(recorder.path)
-        } else {
-            Err("Not recording".to_string())
-        }
+    pub fn current_station(&self) -> Option<Station> {
+        self.current_station.lock().clone()
     }
 
     pub fn get_metadata(&self) -> Option<Metadata> {
         self.metadata.lock().clone()
     }
 
-    fn update_metadata(&self, metadata: Metadata) {
-        *self.metadata.lock() = Some(metadata);
+    pub fn get_volume(&self) -> f32 {
+        *self.volume.lock()
     }
-}
 
-use futures::StreamExt;
-use std::pin::Pin;
+    /// Toggle play/pause using whatever station is currently loaded. Used by
+    /// the system tray and the media-key global shortcut, both of which only
+    /// have a `&Arc<RadioPlayer>` and need a synchronous entry point.
+    pub fn toggle_play_pause(self: &Arc<Self>) {
+        let player = self.clone();
+        tauri::async_runtime::spawn(async move {
+            if player.is_playing() {
+                let _ = player.stop().await;
+            } else if let Some(station) = player.current_station() {
+                let _ = player.clone().play(station).await;
+            }
+        });
+    }
 
-struct HttpStreamSource {
-    stream: Pin<Box<dyn futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>>,
-    icy_metaint: Option<usize>,
-    buffer: Vec<u8>,
-    metadata_buffer: Vec<u8>,
-    bytes_since_metadata: usize,
-    in_metadata: bool,
-    metadata_length: usize,
-    player: Option<Arc<RadioPlayer>>,
-}
+    /// Starts playback of `station`, tearing down any currently active
+    /// stream first (at most one active stream at a time). Returns as soon
+    /// as the attempt has been kicked off; playback lifecycle is reported
+    /// entirely through `play`/`reconnecting`/`playback-error` events, never
+    /// through this method's return value.
+    pub async fn play(self: Arc<Self>, station: Station) -> Result<(), String> {
+        let gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
 
-impl HttpStreamSource {
-    fn new(
-        stream: impl futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
-        icy_metaint: Option<usize>,
-        player: Arc<RadioPlayer>,
-    ) -> Self {
-        Self {
-            stream: Box::pin(stream),
-            icy_metaint,
-            buffer: Vec::with_capacity(8192),
-            metadata_buffer: Vec::new(),
-            bytes_since_metadata: 0,
-            in_metadata: false,
-            metadata_length: 0,
-            player: Some(player),
+        if let Some(sink) = self.sink.lock().take() {
+            sink.stop();
         }
-    }
-}
 
-impl Source for HttpStreamSource {
-    fn current_frame_len(&self) -> Option<usize> {
-        None
-    }
+        *self.current_station.lock() = Some(station.clone());
+        *self.metadata.lock() = None;
 
-    fn channels(&self) -> u16 {
-        2
+        tokio::spawn(Self::run_playback(self, station, gen));
+
+        Ok(())
     }
 
-    fn sample_rate(&self) -> u32 {
-        44100
+    pub async fn stop(&self) -> Result<(), String> {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        if let Some(sink) = self.sink.lock().take() {
+            sink.stop();
+        }
+        self.emit("stop", ());
+        Ok(())
     }
 
-    fn total_duration(&self) -> Option<Duration> {
-        None
+    pub async fn set_volume(&self, volume: f32) -> Result<(), String> {
+        let vol = volume.clamp(0.0, 1.0);
+        *self.volume.lock() = vol;
+        if let Some(sink) = self.sink.lock().as_ref() {
+            sink.set_volume(vol);
+        }
+        Ok(())
     }
-}
 
-impl Iterator for HttpStreamSource {
-    type Item = i16;
+    fn handle_metadata(&self, gen: u64, meta: icy_metadata::IcyMetadata) {
+        if !self.is_current_generation(gen) {
+            return;
+        }
 
-    fn next(&mut self) -> Option<Self::Item> {
+        let raw_title = meta.stream_title().unwrap_or("").trim().to_string();
+        if raw_title.is_empty() {
+            return;
+        }
+
+        let (artist, title) = match raw_title.split_once(" - ") {
+            Some((a, t)) => (a.trim().to_string(), t.trim().to_string()),
+            None => (String::new(), raw_title.clone()),
+        };
+
+        let metadata = Metadata {
+            title,
+            artist,
+            album: String::new(),
+            artwork_url: String::new(),
+        };
+
+        *self.metadata.lock() = Some(metadata.clone());
+        self.emit("metadata-updated", metadata);
+    }
+
+    /// Drives the connect-with-retry loop for one playback "session"
+    /// (identified by `gen`). Re-enters the retry loop whenever the sink
+    /// ends unexpectedly (a stream drop) while this generation is still the
+    /// active one; exits quietly once superseded by a newer `play()`/`stop()`.
+    async fn run_playback(self: Arc<Self>, station: Station, gen: u64) {
+        // A successful `try_connect_and_play` skips `RETRY_DELAYS` entirely
+        // (only a *failed* attempt backs off), so a station that connects but
+        // whose sink then ends almost immediately, over and over, would
+        // otherwise loop forever with no backoff and never reach a terminal
+        // `playback-error` (finding #3). Track a streak of short-lived
+        // episodes across drop/reconnect cycles and give up once it's long
+        // enough that "reconnecting" is clearly not going to help.
+        const SHORT_EPISODE_THRESHOLD: Duration = Duration::from_secs(2);
+        const MAX_CONSECUTIVE_SHORT_EPISODES: u32 = 3;
+        let mut consecutive_short_episodes: u32 = 0;
+
         loop {
-            if !self.buffer.is_empty() {
-                return Some(self.buffer.remove(0) as i16);
+            if !self.is_current_generation(gen) {
+                return;
             }
 
-            // This is a blocking call in an iterator, which is not ideal
-            // but works for our use case. In production, you'd want async.
-            let rt = tokio::runtime::Handle::current();
-            let chunk = rt.block_on(async {
-                self.stream.next().await
-            });
+            let player = self.clone();
+            let station_for_attempt = station.clone();
+            let result = retry_with_backoff(
+                &RETRY_DELAYS,
+                || {
+                    let player = player.clone();
+                    let station = station_for_attempt.clone();
+                    async move { player.try_connect_and_play(station, gen).await }
+                },
+                |attempt_index| {
+                    if self.is_current_generation(gen) {
+                        self.emit(
+                            "reconnecting",
+                            ReconnectingPayload {
+                                attempt: attempt_index as u32 + 1,
+                            },
+                        );
+                    }
+                },
+            )
+            .await;
 
-            match chunk {
-                Some(Ok(bytes)) => {
-                    let data = bytes.as_ref();
+            match result {
+                Ok(join_handle) => {
+                    if !self.is_current_generation(gen) {
+                        return;
+                    }
+                    self.emit("play", station.clone());
+                    let episode_started = std::time::Instant::now();
+                    let _ = join_handle.await;
 
-                    if let Some(metaint) = self.icy_metaint {
-                        for &byte in data {
-                            if self.in_metadata {
-                                self.metadata_buffer.push(byte);
-                                if self.metadata_buffer.len() >= self.metadata_length {
-                                    self.parse_icy_metadata();
-                                    self.in_metadata = false;
-                                    self.metadata_buffer.clear();
-                                }
-                            } else {
-                                self.bytes_since_metadata += 1;
-                                if self.bytes_since_metadata >= metaint {
-                                    self.in_metadata = true;
-                                    self.metadata_length = byte as usize * 16;
-                                    self.bytes_since_metadata = 0;
-                                    if self.metadata_length == 0 {
-                                        self.in_metadata = false;
-                                    }
-                                } else {
-                                    self.buffer.push(byte);
-                                }
-                            }
+                    if !self.is_current_generation(gen) {
+                        return;
+                    }
+
+                    if episode_started.elapsed() < SHORT_EPISODE_THRESHOLD {
+                        consecutive_short_episodes += 1;
+                        if consecutive_short_episodes >= MAX_CONSECUTIVE_SHORT_EPISODES {
+                            self.emit(
+                                "playback-error",
+                                PlaybackErrorPayload {
+                                    reason: "Couldn't play this station: connection keeps \
+                                             dropping immediately after connecting"
+                                        .to_string(),
+                                },
+                            );
+                            return;
                         }
                     } else {
-                        self.buffer.extend_from_slice(data);
+                        // A real stretch of sustained playback happened —
+                        // this wasn't a rapid-drop loop, so reset the streak.
+                        consecutive_short_episodes = 0;
                     }
 
-                    if !self.buffer.is_empty() {
-                        return Some(self.buffer.remove(0) as i16);
-                    }
+                    // The sink ended while this generation is still current:
+                    // treat it as an unexpected drop and reconnect.
+                    continue;
                 }
-                Some(Err(_)) => return None,
-                None => return None,
-            }
-        }
-    }
-}
-
-impl HttpStreamSource {
-    fn parse_icy_metadata(&mut self) {
-        if let Ok(metadata_str) = String::from_utf8(self.metadata_buffer.clone()) {
-            let mut title = String::new();
-            let mut artist = String::new();
-
-            for part in metadata_str.split(';') {
-                if let Some((key, value)) = part.split_once('=') {
-                    let value = value.trim_matches('\'').trim_matches('"');
-                    match key.trim() {
-                        "StreamTitle" => {
-                            if let Some((a, t)) = value.split_once(" - ") {
-                                artist = a.trim().to_string();
-                                title = t.trim().to_string();
-                            } else {
-                                title = value.to_string();
-                            }
-                        }
-                        "StreamUrl" => { /* ignore */ }
-                        _ => {}
+                Err(reason) => {
+                    if self.is_current_generation(gen) {
+                        self.emit(
+                            "playback-error",
+                            PlaybackErrorPayload {
+                                reason: format!("Couldn't play this station: {reason}"),
+                            },
+                        );
                     }
-                }
-            }
-
-            if !title.is_empty() || !artist.is_empty() {
-                if let Some(player) = &self.player {
-                    player.update_metadata(Metadata {
-                        title,
-                        artist,
-                        album: String::new(),
-                        artwork_url: String::new(),
-                    });
+                    return;
                 }
             }
         }
     }
-}
 
-struct EqSource<S: Source<Item = i16>> {
-    source: S,
-    eq_gains: Arc<Mutex<[f32; 10]>>,
-    filters: [BiquadFilter; 10],
-}
-
-impl<S: Source<Item = i16>> EqSource<S> {
-    fn new(source: S, eq_gains: Arc<Mutex<[f32; 10]>>) -> Self {
-        let frequencies = [31.0, 62.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0];
-        let filters = frequencies.map(|f| BiquadFilter::new(f, 44100.0));
-
-        Self {
-            source,
-            eq_gains,
-            filters,
-        }
-    }
-}
-
-impl<S: Source<Item = i16>> Source for EqSource<S> {
-    fn current_frame_len(&self) -> Option<usize> {
-        self.source.current_frame_len()
-    }
-
-    fn channels(&self) -> u16 {
-        self.source.channels()
-    }
-
-    fn sample_rate(&self) -> u32 {
-        self.source.sample_rate()
-    }
-
-    fn total_duration(&self) -> Option<Duration> {
-        self.source.total_duration()
-    }
-}
-
-impl<S: Source<Item = i16>> Iterator for EqSource<S> {
-    type Item = i16;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let sample = self.source.next()?;
-        let gains = self.eq_gains.lock();
-        let mut processed = sample as f32 / 32768.0;
-
-        for (i, filter) in self.filters.iter_mut().enumerate() {
-            filter.set_gain(gains[i]);
-            processed = filter.process(processed);
+    /// One connection attempt: builds the HTTP + ICY + decoder pipeline and
+    /// starts playback on a blocking thread. Resolves once the sink has
+    /// actually started (or the attempt has definitively failed), not once
+    /// playback has finished.
+    async fn try_connect_and_play(
+        self: Arc<Self>,
+        station: Station,
+        gen: u64,
+    ) -> Result<tokio::task::JoinHandle<()>, String> {
+        if !self.is_current_generation(gen) {
+            return Err("superseded".to_string());
         }
 
-        Some((processed.clamp(-1.0, 1.0) * 32767.0) as i16)
-    }
-}
+        let mut headers = http::HeaderMap::new();
+        icy_metadata::add_icy_metadata_header(&mut headers);
+        let client = reqwest::Client::builder()
+            .default_headers(headers)
+            .connect_timeout(Duration::from_secs(8))
+            // Per-read idle timeout, NOT a total-request deadline: reqwest's
+            // `.timeout()` would cut off every stream after the deadline even
+            // while healthy (it "applies from when the request starts
+            // connecting until the response body has finished" — fatal for a
+            // multi-hour radio stream). `.read_timeout()` resets on every
+            // successful read, so it only fires when the server accepts the
+            // connection and then genuinely stalls (finding #2).
+            .read_timeout(Duration::from_secs(30))
+            .user_agent("WinRadio/0.1")
+            .build()
+            .map_err(|e| e.to_string())?;
 
-struct BiquadFilter {
-    a0: f32, a1: f32, a2: f32,
-    b1: f32, b2: f32,
-    x1: f32, x2: f32,
-    y1: f32, y2: f32,
-}
+        let url = station
+            .url
+            .parse()
+            .map_err(|e| format!("Invalid station URL: {e}"))?;
 
-impl BiquadFilter {
-    fn new(freq: f32, sample_rate: f32) -> Self {
-        let mut filter = Self {
-            a0: 1.0, a1: 0.0, a2: 0.0,
-            b1: 0.0, b2: 0.0,
-            x1: 0.0, x2: 0.0,
-            y1: 0.0, y2: 0.0,
+        let http_stream = HttpStream::new(client, url)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let icy_headers = IcyHeaders::parse_from_headers(http_stream.headers());
+        let metadata_interval = icy_headers.metadata_interval();
+        const STORAGE_CAPACITY_BYTES: u64 = 4 * 1024 * 1024;
+        // Clamp well under the bounded storage's capacity: a station reporting
+        // an inflated/bogus `icy-br` header must never be able to ask for a
+        // prefetch larger than what the buffer can actually hold (finding #8).
+        let prefetch_bytes = icy_headers
+            .bitrate()
+            .map(|kbps| (kbps as u64 / 8) * 1024 * 3)
+            .unwrap_or(64 * 1024)
+            .min(3 * 1024 * 1024);
+
+        let reader = match StreamDownload::from_stream(
+            http_stream,
+            BoundedStorageProvider::new(
+                MemoryStorageProvider,
+                NonZeroUsize::new(STORAGE_CAPACITY_BYTES as usize).unwrap(),
+            ),
+            DownloadSettings::default().prefetch_bytes(prefetch_bytes),
+        )
+        .await
+        {
+            Ok(reader) => reader,
+            Err(e) => return Err(e.decode_error().await.to_string()),
         };
-        filter.set_frequency(freq, sample_rate);
-        filter.set_gain(0.0);
-        filter
+
+        if !self.is_current_generation(gen) {
+            return Err("superseded".to_string());
+        }
+
+        let player_for_meta = self.clone();
+        let icy_reader = IcyMetadataReader::new(reader, metadata_interval, move |meta| {
+            if let Ok(meta) = meta {
+                player_for_meta.handle_metadata(gen, meta);
+            }
+        });
+
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+        let stream_handle = self.stream_handle.clone();
+        let sink_slot = self.sink.clone();
+        let volume = *self.volume.lock();
+        // Cloned so the blocking closure can re-check the generation right
+        // before publishing the sink — closing the race window between the
+        // check above and the moment the (slow-to-build) decoder/sink is
+        // finally ready (finding #1).
+        let player_for_install = self.clone();
+
+        let join_handle = tokio::task::spawn_blocking(move || {
+            let decoder = match rodio::Decoder::new(icy_reader) {
+                Ok(d) => d,
+                Err(e) => {
+                    let _ = ready_tx.send(Err(e.to_string()));
+                    return;
+                }
+            };
+
+            let sink = match Sink::try_new(&stream_handle) {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = ready_tx.send(Err(e.to_string()));
+                    return;
+                }
+            };
+            sink.set_volume(volume);
+            sink.append(decoder);
+
+            let sink = Arc::new(sink);
+            if let Err(stale_sink) = install_if_current(
+                &player_for_install.generation,
+                gen,
+                &sink_slot,
+                sink.clone(),
+            ) {
+                // A newer play()/stop() superseded us while the decoder/sink
+                // was being built. Never publish a stale sink into the shared
+                // slot — tear it down instead, so at most one stream is ever
+                // active (spec invariant) and no later stop()/set_volume()
+                // call can accidentally act on the wrong sink.
+                stale_sink.stop();
+                let _ = ready_tx.send(Err("superseded".to_string()));
+                return;
+            }
+
+            let _ = ready_tx.send(Ok(()));
+
+            sink.sleep_until_end();
+        });
+
+        match ready_rx.await {
+            Ok(Ok(())) => Ok(join_handle),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err("Playback thread failed to start".to_string()),
+        }
+    }
+}
+
+/// Installs `value` into `slot` only if `generation` still equals `gen` at
+/// the moment of installation. Closes the race between an earlier
+/// "am I still current?" check and the moment a slow-to-construct resource
+/// (e.g. a `Sink`) actually finishes and is ready to be shared: without this,
+/// a superseded attempt could still publish itself into `slot` right after
+/// the check that was meant to stop it (finding #1). On success, returns
+/// `Ok(())` with `value` now in `slot`; if superseded, hands `value` back via
+/// `Err` so the caller can tear it down instead of leaking a live resource
+/// nothing will ever stop.
+fn install_if_current<T>(
+    generation: &AtomicU64,
+    gen: u64,
+    slot: &Mutex<Option<T>>,
+    value: T,
+) -> Result<(), T> {
+    if generation.load(Ordering::SeqCst) != gen {
+        return Err(value);
+    }
+    *slot.lock() = Some(value);
+    Ok(())
+}
+
+/// Generic retry helper: tries `attempt` once; on failure, calls
+/// `on_retry(index)` and retries after each of `delays` in turn (a zero
+/// delay is not slept on). Returns the first success, or the last error once
+/// every delay has been exhausted.
+async fn retry_with_backoff<T, F, Fut>(
+    delays: &[Duration],
+    mut attempt: F,
+    mut on_retry: impl FnMut(usize),
+) -> Result<T, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, String>>,
+{
+    match attempt().await {
+        Ok(v) => return Ok(v),
+        Err(mut last_err) => {
+            for (index, delay) in delays.iter().enumerate() {
+                on_retry(index);
+                if !delay.is_zero() {
+                    tokio::time::sleep(*delay).await;
+                }
+                match attempt().await {
+                    Ok(v) => return Ok(v),
+                    Err(e) => last_err = e,
+                }
+            }
+            Err(last_err)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn retry_delays_match_spec_backoff_schedule() {
+        // immediate, 2s, 5s, 10s, then give up (~20s budget) — see
+        // spec-1-1-reliable-single-station-playback-foundation-rescue.md
+        assert_eq!(
+            RETRY_DELAYS,
+            [
+                Duration::from_secs(0),
+                Duration::from_secs(2),
+                Duration::from_secs(5),
+                Duration::from_secs(10),
+            ]
+        );
     }
 
-    fn set_frequency(&mut self, freq: f32, sample_rate: f32) {
-        let w0 = 2.0 * std::f32::consts::PI * freq / sample_rate;
-        let cos_w0 = w0.cos();
-        let sin_w0 = w0.sin();
-        let alpha = sin_w0 / (2.0 * 1.0); // Q = 1.0
+    // Regression coverage for the stale-sink install race (code review
+    // finding #1): a full HTTP-backed integration test isn't feasible in
+    // this harness (no test radio server, no audio device in CI), so this
+    // exercises the exact generation-guard primitive `try_connect_and_play`
+    // uses at the real install site, in isolation from Sink/HttpStream.
 
-        self.b1 = -2.0 * cos_w0;
-        self.b2 = 1.0 - alpha;
+    #[test]
+    fn install_if_current_installs_when_generation_still_matches() {
+        let generation = AtomicU64::new(5);
+        let slot: Mutex<Option<&str>> = Mutex::new(None);
+
+        let result = install_if_current(&generation, 5, &slot, "sink-a");
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(*slot.lock(), Some("sink-a"));
     }
 
-    fn set_gain(&mut self, gain_db: f32) {
-        let a = 10.0_f32.powf(gain_db / 40.0);
-        let w0 = 2.0 * std::f32::consts::PI * self.get_frequency() / 44100.0;
-        let cos_w0 = w0.cos();
-        let sin_w0 = w0.sin();
-        let alpha = sin_w0 / 2.0;
+    #[test]
+    fn install_if_current_rejects_and_hands_the_value_back_when_superseded() {
+        // Simulates: play() for gen 5 is mid-flight (slow decoder/sink
+        // construction) when a newer play()/stop() bumps the generation to 7
+        // before the install happens.
+        let generation = AtomicU64::new(7);
+        let slot: Mutex<Option<&str>> = Mutex::new(None);
 
-        let a0 = 1.0 + alpha * a;
-        self.a0 = (1.0 - cos_w0) * a / a0;
-        self.a1 = 2.0 * (1.0 - cos_w0) * a / a0;
-        self.a2 = self.a0;
+        let result = install_if_current(&generation, 5, &slot, "stale-sink");
+
+        assert_eq!(result, Err("stale-sink"));
+        // The whole point of the guard: a superseded value must never reach
+        // the shared slot, so a caller checking `slot` for "what's currently
+        // playing" (e.g. stop()/set_volume()) can never observe it.
+        assert_eq!(*slot.lock(), None);
     }
 
-    fn get_frequency(&self) -> f32 {
-        1000.0 // placeholder
+    #[test]
+    fn install_if_current_does_not_clobber_a_pre_existing_value_when_superseded() {
+        let generation = AtomicU64::new(99);
+        let slot: Mutex<Option<&str>> = Mutex::new(Some("already-playing"));
+
+        let result = install_if_current(&generation, 5, &slot, "stale-sink");
+
+        assert_eq!(result, Err("stale-sink"));
+        assert_eq!(*slot.lock(), Some("already-playing"));
     }
 
-    fn process(&mut self, input: f32) -> f32 {
-        let y = self.a0 * input + self.a1 * self.x1 + self.a2 * self.x2
-            - self.b1 * self.y1 - self.b2 * self.y2;
+    #[tokio::test]
+    async fn retry_with_backoff_succeeds_after_transient_failures() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let retries_seen = Arc::new(Mutex::new(Vec::new()));
 
-        self.x2 = self.x1;
-        self.x1 = input;
-        self.y2 = self.y1;
-        self.y1 = y;
+        let delays = [Duration::ZERO, Duration::ZERO, Duration::ZERO];
+        let a = attempts.clone();
+        let result = retry_with_backoff(
+            &delays,
+            move || {
+                let a = a.clone();
+                async move {
+                    let n = a.fetch_add(1, Ordering::SeqCst);
+                    if n < 2 {
+                        Err("fail".to_string())
+                    } else {
+                        Ok(42)
+                    }
+                }
+            },
+            |i| retries_seen.lock().push(i),
+        )
+        .await;
 
-        y
+        assert_eq!(result, Ok(42));
+        // initial attempt + 2 retries = 3 total attempts
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn retry_with_backoff_gives_up_after_exhausting_all_delays() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let retry_count = Arc::new(AtomicUsize::new(0));
+
+        let delays = [Duration::ZERO, Duration::ZERO, Duration::ZERO, Duration::ZERO];
+        let a = attempts.clone();
+        let result: Result<(), String> = retry_with_backoff(
+            &delays,
+            move || {
+                let a = a.clone();
+                async move {
+                    a.fetch_add(1, Ordering::SeqCst);
+                    Err("still failing".to_string())
+                }
+            },
+            {
+                let retry_count = retry_count.clone();
+                move |_| {
+                    retry_count.fetch_add(1, Ordering::SeqCst);
+                }
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        // initial attempt + one retry per delay entry
+        assert_eq!(attempts.load(Ordering::SeqCst), 1 + delays.len());
+        assert_eq!(retry_count.load(Ordering::SeqCst), delays.len());
+    }
+
+    #[tokio::test]
+    async fn retry_with_backoff_succeeds_immediately_without_retrying() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let retry_calls = Arc::new(AtomicUsize::new(0));
+        let delays = RETRY_DELAYS;
+
+        let c = calls.clone();
+        let result = retry_with_backoff(
+            &delays,
+            move || {
+                let c = c.clone();
+                async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    Ok::<_, String>(())
+                }
+            },
+            {
+                let retry_calls = retry_calls.clone();
+                move |_| {
+                    retry_calls.fetch_add(1, Ordering::SeqCst);
+                }
+            },
+        )
+        .await;
+
+        assert!(result.is_ok());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(retry_calls.load(Ordering::SeqCst), 0);
     }
 }

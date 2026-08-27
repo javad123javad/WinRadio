@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use tauri::State;
 use crate::commands::{Station, Settings};
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -26,7 +25,7 @@ impl Store {
         let path = app_dir.join("store.json");
         let data = if path.exists() {
             let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-            serde_json::from_str(&content).unwrap_or_default()
+            Self::parse_store_data(&content)
         } else {
             StoreData::default()
         };
@@ -35,6 +34,32 @@ impl Store {
             path,
             data: Arc::new(Mutex::new(data)),
         })
+    }
+
+    /// Decodes `stations` and `settings` independently rather than as one
+    /// `StoreData` unit: previously, any single field failing to parse (a
+    /// future schema change, hand-edited JSON, etc.) fell back to
+    /// `unwrap_or_default()` for the *entire* struct, silently wiping the
+    /// user's saved stations along with it. Each half now falls back to its
+    /// own default on its own, so a malformed `settings` (or `stations`)
+    /// shape can never take the other down with it.
+    fn parse_store_data(content: &str) -> StoreData {
+        let raw: serde_json::Value = match serde_json::from_str(content) {
+            Ok(v) => v,
+            Err(_) => return StoreData::default(),
+        };
+
+        let stations = raw
+            .get("stations")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        let settings = raw
+            .get("settings")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        StoreData { stations, settings }
     }
 
     fn save(&self) -> Result<(), String> {
@@ -66,12 +91,73 @@ impl Store {
         self.save()
     }
 
-    pub fn get(&self, key: &str) -> Option<serde_json::Value> {
-        let data = self.data.lock();
-        match key {
-            "minimizeToTray" => Some(serde_json::Value::Bool(data.settings.minimize_to_tray)),
-            "startMinimized" => Some(serde_json::Value::Bool(data.settings.start_minimized)),
-            _ => None,
-        }
+    pub fn minimize_to_tray(&self) -> bool {
+        self.data.lock().settings.minimize_to_tray
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_settings_does_not_drop_stations() {
+        // `settings` shape is from a hypothetical future/incompatible
+        // version (wrong types throughout); `stations` is well-formed.
+        let content = r#"{
+            "stations": [
+                {"id": "a", "name": "Station A", "url": "https://a.example/stream",
+                 "faviconUrl": null, "homepage": null, "category": null,
+                 "isFavorite": true, "addedAt": 123}
+            ],
+            "settings": {"minimizeToTray": "not-a-bool", "theme": 42}
+        }"#;
+
+        let data = Store::parse_store_data(content);
+
+        assert_eq!(data.stations.len(), 1);
+        assert_eq!(data.stations[0].id, "a");
+        // Falls back to Settings::default() rather than failing entirely.
+        assert_eq!(data.settings.theme, "system");
+    }
+
+    #[test]
+    fn missing_new_settings_fields_fall_back_instead_of_failing_the_whole_struct() {
+        // Simulates a store.json written before `sleepTimerDefaultMinutes`/
+        // `volume` existed.
+        let content = r#"{
+            "stations": [],
+            "settings": {"minimizeToTray": true, "theme": "dark"}
+        }"#;
+
+        let data = Store::parse_store_data(content);
+
+        assert!(data.settings.minimize_to_tray);
+        assert_eq!(data.settings.theme, "dark");
+        assert_eq!(data.settings.sleep_timer_default_minutes, 30);
+        assert_eq!(data.settings.volume, 0.7);
+    }
+
+    #[test]
+    fn malformed_stations_does_not_drop_settings() {
+        let content = r#"{
+            "stations": "not-an-array",
+            "settings": {"minimizeToTray": true, "theme": "dark",
+                         "sleepTimerDefaultMinutes": 60, "volume": 0.5}
+        }"#;
+
+        let data = Store::parse_store_data(content);
+
+        assert!(data.stations.is_empty());
+        assert!(data.settings.minimize_to_tray);
+        assert_eq!(data.settings.theme, "dark");
+    }
+
+    #[test]
+    fn totally_invalid_json_falls_back_to_full_default() {
+        let data = Store::parse_store_data("not json at all");
+
+        assert!(data.stations.is_empty());
+        assert_eq!(data.settings.theme, "system");
     }
 }
