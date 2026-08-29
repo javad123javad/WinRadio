@@ -21,3 +21,19 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-1-reliable-single-station-playback-foundation-rescue.md`
   summary: Story 1.5 should implement "on relaunch, last-played station shows idle with last volume restored" as its own acceptance criterion — this was mistakenly drafted into Story 1.1's spec and then correctly removed after the implementer flagged it as unbuilt.
   evidence: epics.md's Story 1.5 AC states this exact behavior; Story 1.1's own four ACs do not include it. Confirmed with the human during Story 1.1's build (see spec's Spec Change Log) and removed from Story 1.1's scope rather than implemented there.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-2-search-browse-stations.md`
+  summary: Add a frontend test runner (vitest) and cover `winradio/src/stores/search.ts`'s debounce/dedup/`requestSeq` race-guard logic — currently correct by direct code inspection, but with zero regression-safety net.
+  evidence: Code review of Story 1.2 (verification-gap layer) found three distinct untested-but-correct-today mechanisms in `search.ts`: the zero-match/offline status mapping, the `{query,filters}` signature dedup (AD-13), and the stale-response `requestSeq` guard. Each has a concrete one-line regression that would ship silently since the repo has no frontend test infrastructure at all (confirmed: no vitest/jest dependency, no `*.test.ts`/`*.spec.ts` files anywhere).
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-2-search-browse-stations.md`
+  summary: Superseded in-flight `search_stations`/`get_filter_options` Tauri invocations aren't cancelled, only their results ignored — a fast sequence of filter changes can fire several real HTTP requests to Radio-Browser that are guaranteed to be discarded.
+  evidence: Code review found `search.ts`'s `requestSeq` guard discards a stale *response* but the underlying `invoke()` call (and the Rust-side HTTP request it triggers) still runs to completion. Fixing this properly needs a cancellation mechanism plumbed through Tauri's IPC (e.g. an abort token passed to the Rust command), which is more design work than a trivial patch — and debouncing already covers the common typed-text case, so real-world impact is limited to rapid successive filter-select changes.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-2-search-browse-stations.md`
+  summary: `search_stations`/`get_filter_options` build a fresh `reqwest::Client` per call instead of reusing one via Tauri managed state — minor connection-reuse inefficiency (no TLS/connection-pool reuse across searches).
+  evidence: Code review of `winradio/src-tauri/src/directory.rs`'s `build_client()` found it's invoked fresh inside both `search_stations_at` and `get_filter_options_at`. Low real-world impact for a single-user desktop app's search frequency, but worth fixing if this pattern is reused for Epic 2's weather/location clients.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-2-search-browse-stations.md`
+  summary: Filter dropdowns (genre/country/language selects in `SearchPanel.vue`) show no loading/error/retry state while `get_filter_options` is in flight or after it fails — they just render "(any)" indistinguishably from "nothing available."
+  evidence: Code review found `loadFilterOptions` logs failures to console but the UI never reflects `filterOptionsLoading`/a failed load, and there's no retry affordance once the first mount's fetch fails. Minor UX polish, not a functional defect.

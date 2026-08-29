@@ -5,9 +5,13 @@
         type="button"
         class="flex w-14 flex-col items-center gap-1"
         aria-label="Favorites"
-        aria-pressed="true"
+        :aria-pressed="activeView === 'favorites'"
+        @click="activeView = 'favorites'"
       >
-        <span class="flex h-12 w-12 items-center justify-center rounded-full border border-primary bg-primary/20 text-on-surface">
+        <span
+          class="flex h-12 w-12 items-center justify-center rounded-full border text-on-surface"
+          :class="activeView === 'favorites' ? 'border-primary bg-primary/20' : 'border-outline'"
+        >
           <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z" />
           </svg>
@@ -15,8 +19,17 @@
         <span class="text-caption text-on-surface-variant">Favorites</span>
       </button>
 
-      <button type="button" class="flex w-14 flex-col items-center gap-1 opacity-50" aria-label="Filter (coming soon)" disabled>
-        <span class="flex h-12 w-12 items-center justify-center rounded-full border border-outline text-on-surface">
+      <button
+        type="button"
+        class="flex w-14 flex-col items-center gap-1"
+        aria-label="Filter"
+        :aria-pressed="activeView === 'search' && showFilterControls"
+        @click="onFilterClick"
+      >
+        <span
+          class="flex h-12 w-12 items-center justify-center rounded-full border text-on-surface"
+          :class="activeView === 'search' && showFilterControls ? 'border-primary bg-primary/20' : 'border-outline'"
+        >
           <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
             <path stroke-linecap="round" stroke-linejoin="round" d="M4 5h16M7 12h10M10 19h4" />
           </svg>
@@ -24,8 +37,17 @@
         <span class="text-caption text-on-surface-variant">Filter</span>
       </button>
 
-      <button type="button" class="flex w-14 flex-col items-center gap-1 opacity-50" aria-label="Search (coming soon)" disabled>
-        <span class="flex h-12 w-12 items-center justify-center rounded-full border border-outline text-on-surface">
+      <button
+        type="button"
+        class="flex w-14 flex-col items-center gap-1"
+        aria-label="Search"
+        :aria-pressed="activeView === 'search'"
+        @click="activeView = 'search'"
+      >
+        <span
+          class="flex h-12 w-12 items-center justify-center rounded-full border text-on-surface"
+          :class="activeView === 'search' ? 'border-primary bg-primary/20' : 'border-outline'"
+        >
           <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
             <circle cx="11" cy="11" r="6" />
             <path stroke-linecap="round" d="M20 20l-4.35-4.35" />
@@ -52,35 +74,61 @@
 
     <div class="flex flex-1 items-start">
       <aside class="w-rail flex-shrink-0 px-4 pb-4">
-        <h2 class="mb-3 text-body font-semibold text-on-surface">Favorites ({{ stationsStore.stations.length }})</h2>
+        <!-- Only one of Favorites/Search is the active rail content at a
+             time (Boundaries & Constraints) — same rail, same StationRow,
+             content source swaps underneath. -->
+        <template v-if="activeView === 'favorites'">
+          <h2 class="mb-3 text-body font-semibold text-on-surface">Favorites ({{ stationsStore.stations.length }})</h2>
 
-        <p
-          v-if="stationsStore.loaded && stationsStore.stations.length === 0"
-          class="text-caption text-on-surface-variant"
-        >
-          No favorites yet — search to find a station.
-        </p>
+          <p
+            v-if="stationsStore.loaded && stationsStore.stations.length === 0"
+            class="text-caption text-on-surface-variant"
+          >
+            No favorites yet — search to find a station.
+          </p>
 
-        <ul>
-          <li v-for="station in stationsStore.stations" :key="station.id" class="mb-1.5">
-            <button
-              type="button"
-              class="flex h-14 w-full items-center gap-2 rounded-sm px-2.5 text-left transition-colors"
-              :class="isCurrent(station) ? 'bg-surface-raised-high' : 'bg-surface-raised hover:bg-surface-raised-high'"
-              @click="stationsStore.playStation(station)"
-            >
-              <span class="flex h-[22px] w-[22px] flex-shrink-0 items-center justify-center rounded-full border border-secondary text-secondary">
-                <svg v-if="isCurrent(station) && playbackStore.isPlaying" class="h-2.5 w-2.5" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M6 5h4v14H6zm8 0h4v14h-4z" />
-                </svg>
-                <svg v-else class="h-2.5 w-2.5 translate-x-px" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-              </span>
-              <span class="truncate text-label-link text-secondary">{{ station.name }}</span>
-            </button>
-          </li>
-        </ul>
+          <ul>
+            <StationRow
+              v-for="station in stationsStore.stations"
+              :key="station.id"
+              :name="station.name"
+              :is-current="isCurrent(station.id)"
+              :is-playing="playbackStore.isPlaying"
+              @play="stationsStore.playStation(station)"
+            />
+          </ul>
+        </template>
+
+        <template v-else>
+          <h2 class="mb-3 text-body font-semibold text-on-surface">
+            Search{{ searchStore.status === 'ok' ? ` (${searchStore.results.length})` : '' }}
+          </h2>
+
+          <SearchPanel :show-filter-controls="showFilterControls" />
+
+          <ul v-if="searchStore.results.length > 0">
+            <StationRow
+              v-for="station in searchStore.results"
+              :key="station.id"
+              :name="station.name"
+              :is-current="isCurrent(station.id)"
+              :is-playing="playbackStore.isPlaying"
+              @play="searchStore.playResult(station)"
+            />
+          </ul>
+          <p v-else-if="searchStore.status === 'loading'" class="text-caption text-on-surface-variant">
+            Searching…
+          </p>
+          <p v-else-if="searchStore.status === 'zero-match'" class="text-caption text-on-surface-variant">
+            No stations found for '{{ searchStore.lastQuery }}'.
+          </p>
+          <p v-else-if="searchStore.status === 'offline'" class="text-caption text-on-surface-variant">
+            {{ searchStore.errorMessage }}
+          </p>
+          <p v-else-if="searchStore.status === 'idle'" class="text-caption text-on-surface-variant">
+            Type a query or choose a filter to search stations.
+          </p>
+        </template>
       </aside>
 
       <main class="flex flex-1 flex-col gap-4 p-5">
@@ -119,18 +167,35 @@
 import { onMounted, ref, watch } from 'vue'
 import TransportBar from '@/components/TransportBar.vue'
 import SettingsModal from '@/components/SettingsModal.vue'
-import { useStationsStore, type Station } from '@/stores/stations'
+import StationRow from '@/components/StationRow.vue'
+import SearchPanel from '@/components/SearchPanel.vue'
+import { useStationsStore } from '@/stores/stations'
 import { usePlaybackStore } from '@/stores/playback'
 import { useSettingsStore } from '@/stores/settings'
+import { useSearchStore } from '@/stores/search'
 
 const stationsStore = useStationsStore()
 const playbackStore = usePlaybackStore()
 const settingsStore = useSettingsStore()
+const searchStore = useSearchStore()
 
 const showSettings = ref(false)
 const infoTiles = ['Location', 'Weather', 'Stream Info']
 
-const isCurrent = (station: Station) => playbackStore.currentStation?.id === station.id
+// Rail content swap (Code Map) — Favorites is the default/landing view
+// (DESIGN.md nav-icon-button note: WinRadio has no separate "Home").
+const activeView = ref<'favorites' | 'search'>('favorites')
+// Filter is a refinement of whichever rail content is showing, not its own
+// destination (Boundaries & Constraints) — it only makes sense against
+// Search results, so clicking it switches to Search and reveals/hides the
+// filter selects within `SearchPanel`.
+const showFilterControls = ref(false)
+const onFilterClick = () => {
+  activeView.value = 'search'
+  showFilterControls.value = !showFilterControls.value
+}
+
+const isCurrent = (id: string) => playbackStore.currentStation?.id === id
 
 let systemDarkQuery: MediaQueryList | undefined
 

@@ -5,6 +5,7 @@
 
 mod audio;
 mod commands;
+mod directory;
 mod store;
 mod tray;
 mod timer;
@@ -66,6 +67,8 @@ async fn main() {
       commands::export_stations,
       commands::clear_all_data,
       commands::get_metadata,
+      directory::search_stations,
+      directory::get_filter_options,
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
