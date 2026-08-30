@@ -39,7 +39,11 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            minimize_to_tray: false,
+            // On by default: the app's whole premise is staying tray-resident
+            // while playing (FR-10, Story 1.6's "instead of quitting" framing;
+            // matches the Settings modal mockup's canonical depicted state,
+            // settings-modal.html:49, which shows this toggle already "on").
+            minimize_to_tray: true,
             sleep_timer_default_minutes: 30,
             theme: "system".to_string(),
             volume: 0.7,

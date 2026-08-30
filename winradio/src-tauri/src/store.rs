@@ -199,6 +199,14 @@ mod tests {
     }
 
     #[test]
+    fn default_settings_minimize_to_tray_is_on() {
+        // Story 1.6: a fresh install must default to tray-resident behavior
+        // ("instead of quitting"), not opt-in — locks in the deliberate
+        // default flip so it can't silently regress back to `false`.
+        assert!(Settings::default().minimize_to_tray);
+    }
+
+    #[test]
     fn missing_last_station_defaults_to_none_instead_of_failing_the_whole_struct() {
         // Simulates a store.json written before `lastStation` existed
         // (spec-1-5) — must parse instead of dropping the settings record.

@@ -22,7 +22,10 @@ export interface Settings {
 // snapshot — never a partial object — or that second writer's field would
 // get silently blanked by the next unrelated settings save.
 export const useSettingsStore = defineStore('settings', () => {
-  const minimizeToTray = ref(false)
+  // Matches Settings::default() on the Rust side (Story 1.6): on by
+  // default, so the fleeting gap before `loadSettings()` resolves never
+  // shows a stale "off" state that contradicts the actual backend default.
+  const minimizeToTray = ref(true)
   const sleepTimerDefaultMinutes = ref(30)
   const theme = ref<Theme>('system')
   const lastStation = ref<Station | undefined>(undefined)

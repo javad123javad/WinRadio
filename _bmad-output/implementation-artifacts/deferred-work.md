@@ -113,3 +113,19 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-5-transport-controls-play-pause-volume-mute.md`
   summary: No frontend component/integration test harness exists to cover `App.vue`'s actual `onMounted` startup wiring (that `restoreLastStation` runs only after `loadSettings` resolves, with the right argument) — a regression in that ordering could ship with a fully green test suite, since the existing store-level tests only exercise `restoreLastStation`/`loadSettings` in isolation, never the real startup sequence together.
   evidence: Code review (verification-gap layer) confirmed no `App.test.ts`/component test exists and traced that neither `playback.test.ts` nor `settings.test.ts` touches `App.vue`. Same class of gap already logged for Story 1.4 (no component-level test tooling); a genuine but larger infrastructure investment beyond a single story.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-6-system-tray-presence.md`
+  summary: The tray icon (`winradio/src-tauri/src/tray.rs`) carries no tooltip or state indicator — once minimized (now the default outcome of closing the window, not opt-in), there's no way to tell from the tray alone what's playing or even that the icon belongs to WinRadio.
+  evidence: Code review confirmed no tooltip-setting API call anywhere in `tray.rs`. Not required by any stated AC (which only asks for play/pause exposure), but a reasonable enhancement now that tray-residency is the default experience for every user.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-6-system-tray-presence.md`
+  summary: Tray "Quit" calls `std::process::exit(0)` directly, with no graceful audio-stream teardown or final store flush. This is more consequential now that minimize-to-tray defaults on, since the tray's Quit item becomes the primary/only exit path for most users instead of the window's X button.
+  evidence: Code review confirmed `tray.rs`'s `"quit"` handler is an unconditional `std::process::exit(0)`. Pre-existing since Story 1.1's tray wiring, not introduced by this story's default-value change, but worth a graceful shutdown path given increased exposure.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-6-system-tray-presence.md`
+  summary: No single-instance guard exists — since the app now commonly runs hidden with no taskbar entry by default, a user who forgets it's running and relaunches it risks a second process contending over the same `store.json` and audio device.
+  evidence: Code review confirmed neither `Cargo.toml` nor `main.rs` registers any single-instance protection (e.g. `tauri-plugin-single-instance`). Pre-existing gap, made more likely to matter now that tray-residency is the default rather than opt-in.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-6-system-tray-presence.md`
+  summary: `tauri.conf.json`'s `systemTray.iconAsTemplate: true` is a macOS-specific setting (template-image recoloring for the macOS menu bar) left enabled in a Windows-only app (NSIS-only bundle target, `main.rs`'s Windows-gated code) — likely a harmless no-op on Windows, but worth confirming the tray icon renders correctly and removing the setting if it's confirmed to do nothing here.
+  evidence: Code review flagged this config value as unrelated to any Windows tray behavior. Pre-existing since the app's original scaffold, unrelated to this story's default-flip change; now exercised by every user by default rather than only opt-ins.
