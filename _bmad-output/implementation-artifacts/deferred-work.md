@@ -37,3 +37,35 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-2-search-browse-stations.md`
   summary: Filter dropdowns (genre/country/language selects in `SearchPanel.vue`) show no loading/error/retry state while `get_filter_options` is in flight or after it fails — they just render "(any)" indistinguishably from "nothing available."
   evidence: Code review found `loadFilterOptions` logs failures to console but the UI never reflects `filterOptionsLoading`/a failed load, and there's no retry affordance once the first mount's fetch fails. Minor UX polish, not a functional defect.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-3-preview-play-from-search-results.md`
+  summary: UI state (Now-Playing card, `StationRow` highlight, transport bar) only updates from Rust-pushed `play`/`reconnecting`/`playback-error` events, never optimistically on click — so a slow connect, or a click landing while the previous station is mid-backoff, can make a click look like it did nothing until the event arrives; a superseded station's stale `reconnecting`/error state can also briefly show under the wrong station name.
+  evidence: Code review (verification pass on the existing click-to-play mechanism, no new code this story) traced `playbackStore.play()` (`winradio/src/stores/playback.ts`) and confirmed it sets no local state before `invoke()` resolves via a backend event. Pre-existing since Story 1.1's event model; the underlying generation-based audio replacement is correct and immediate, this is purely a UI-feedback-latency gap.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-3-preview-play-from-search-results.md`
+  summary: A superseded generation's `run_playback` retry loop can keep sleeping through its backoff schedule (up to ~17s) after being abandoned, purely wasting a background task, before its `is_current_generation` guard lets it exit; rapid switching between search results can leave several of these idle.
+  evidence: Code review of `winradio/src-tauri/src/audio/player.rs`'s `retry_with_backoff`/`run_playback` found no generation check between retry attempts themselves, only at loop/attempt boundaries. Functionally harmless (the guard does eventually stop it, and the new station plays correctly), but worth a cheap fix (check the generation before each sleep) if this pattern is extended.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-3-preview-play-from-search-results.md`
+  summary: Clicking an already-playing row restarts it from scratch (audible cut, elapsed timer reset, metadata cleared) instead of being a no-op; relatedly, `StationRow.vue`'s pause icon on the current row implies a play/pause toggle that doesn't exist — the row's `@click` always emits `play`, never `stop`.
+  evidence: Code review found neither `StationRow.vue`, `searchStore.playResult`, nor `stationsStore.playStation` check `isCurrent` before re-triggering `play()`. Pre-existing since Story 1.1's row design (Story 1.2 only reused it as-is, correctly per this story's spec); a real UX inconsistency but not a violation of any stated AC.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-3-preview-play-from-search-results.md`
+  summary: No click-guard/debounce on `StationRow` — rapid clicks (same or different rows) each open a real HTTP connection attempt in Rust before an earlier click's generation is invalidated, real network churn per stray click rather than just wasted CPU.
+  evidence: Code review confirmed `try_connect_and_play` (`winradio/src-tauri/src/audio/player.rs`) reaches `HttpStream::new(...).await` before checking supersession again. Pre-existing since Story 1.1; low real-world impact for a single user's deliberate clicks, but worth a debounce if this ever becomes an issue.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-3-preview-play-from-search-results.md`
+  summary: A search-result station played via `toPlayableStation` (`winradio/src/stores/search.ts`) never links back to a matching Favorites entry — Radio-Browser's `stationuuid` and a locally-generated Favorites `id` (e.g. `'soma-groove'`) differ even for the same physical station, so `isCurrent` never highlights the corresponding Favorites row, and `isFavorite` is hardcoded `false` regardless of whether an equivalent station is already saved.
+  evidence: Code review traced `search.ts:176-185`'s `toPlayableStation` and `App.vue`'s `isCurrent(id)` check against `stations.ts`'s locally-generated ids. Not required by any stated AC (Story 1.2/1.3 never asked for Search/Favorites cross-highlighting), but a real, user-noticeable inconsistency worth a future story if Favorites ever need to match against Directory-sourced stations.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-3-preview-play-from-search-results.md`
+  summary: `toPlayableStation` drops most of a search result's Directory metadata (`codec`, `bitrate`, `language`, `geoLat`/`geoLong`, `homepage`) and only keeps the first comma-separated tag as `category`, discarding the rest.
+  evidence: Code review of `search.ts:176-185` confirmed the adapter maps only `id`/`name`/`url`/`favicon`/a single tag. Acceptable for now since nothing yet reads the dropped fields (Epic 2's Info Tiles will need codec/bitrate/geo but haven't been built), but worth revisiting once those tiles exist so a search-originated "now playing" station isn't missing data a Favorites-originated one has.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-3-preview-play-from-search-results.md`
+  summary: `playbackStore.play()`'s catch block only logs to console on an IPC-level failure (as opposed to a backend-reported `playback-error` event) — no `errorMessage` or any other user-visible state is set, so a failed `invoke('play', …)` call itself produces zero feedback that the click failed.
+  evidence: Code review of `winradio/src/stores/playback.ts`'s `play()` found the catch block is `console.error` only. A narrow, rare failure path (IPC serialization/dispatch failure, not a normal playback error), pre-existing since Story 1.1.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-3-preview-play-from-search-results.md`
+  summary: `StationRow.vue` has no accessible "currently playing" signal (`aria-pressed`/`aria-current`, or an accessible-name change) beyond a background-color class and a swapped icon — invisible to screen-reader users.
+  evidence: Code review confirmed no ARIA state attributes on the row button. Pre-existing since Story 1.1's original row markup, carried over unchanged through extraction in Story 1.2.
