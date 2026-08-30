@@ -21,11 +21,13 @@ async fn main() {
   let sleep_timer = timer::SleepTimer::new(audio_player.clone());
 
   let audio_player_for_setup = audio_player.clone();
+  let sleep_timer_for_setup = sleep_timer.clone();
 
   tauri::Builder::default()
     .setup(move |app| {
       let handle = app.handle();
       audio_player_for_setup.set_app_handle(handle.clone());
+      sleep_timer_for_setup.set_app_handle(handle.clone());
 
       // Global media-key shortcuts
       #[cfg(target_os = "windows")]

@@ -42,7 +42,7 @@ development_status:
   1-4-favorites-add-remove-reorder: review
   1-5-transport-controls-play-pause-volume-mute: review
   1-6-system-tray-presence: review
-  1-7-sleep-timer: backlog
+  1-7-sleep-timer: review
   1-8-settings-tray-behavior-sleep-timer-default-theme: backlog
   epic-1-retrospective: optional
 

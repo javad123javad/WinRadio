@@ -32,6 +32,14 @@ export const usePlaybackStore = defineStore('playback', () => {
   // (EXPERIENCE.md: "position display is elapsed-time-only"). Never used to
   // poll backend state — internet radio streams have no seek/duration.
   const playStartedAt = ref<number | null>(null)
+  // Read-model for the Sleep Timer's armed state (spec-1-7). Deliberately no
+  // countdown/remaining-time field anywhere — the badge is the only UI
+  // indicator (Boundaries & Constraints: "No persistent countdown"). Cleared
+  // only by an explicit cancel or by firing, never by unrelated
+  // pause/play elsewhere (the Rust `SleepTimer` is independent of playback
+  // state changes made outside `set_sleep_timer`).
+  const sleepTimerArmed = ref(false)
+  const sleepTimerMinutes = ref<number | null>(null)
 
   let listenersReady = false
 
@@ -87,6 +95,16 @@ export const usePlaybackStore = defineStore('playback', () => {
 
       await listen<Metadata>('metadata-updated', (event) => {
         metadata.value = event.payload
+      })
+
+      await listen<{ minutes: number }>('sleep-timer-armed', (event) => {
+        sleepTimerArmed.value = true
+        sleepTimerMinutes.value = event.payload.minutes
+      })
+
+      await listen('sleep-timer-cleared', () => {
+        sleepTimerArmed.value = false
+        sleepTimerMinutes.value = null
       })
 
       listenersReady = true
@@ -172,6 +190,31 @@ export const usePlaybackStore = defineStore('playback', () => {
     }
   }
 
+  // Arms (or re-arms) the Sleep Timer for `minutes` minutes. Not
+  // optimistic — `sleepTimerArmed`/`sleepTimerMinutes` only update once the
+  // Rust side's `sleep-timer-armed` event round-trips back (matching this
+  // store's read-model-only convention for every other field above).
+  // Re-arming while already armed simply supersedes the old timer on the
+  // Rust side; the new `sleep-timer-armed` event reflects the new duration.
+  const armSleepTimer = async (minutes: number) => {
+    try {
+      await invoke('set_sleep_timer', { minutes })
+    } catch (e) {
+      console.error('Arm sleep timer failed:', e)
+    }
+  }
+
+  // Cancels the currently-armed timer. `set_sleep_timer` treats `minutes: 0`
+  // as "cancel" (existing Rust command semantics) rather than "arm for zero
+  // minutes".
+  const cancelSleepTimer = async () => {
+    try {
+      await invoke('set_sleep_timer', { minutes: 0 })
+    } catch (e) {
+      console.error('Cancel sleep timer failed:', e)
+    }
+  }
+
   return {
     isPlaying,
     currentStation,
@@ -182,6 +225,8 @@ export const usePlaybackStore = defineStore('playback', () => {
     reconnectAttempt,
     errorMessage,
     playStartedAt,
+    sleepTimerArmed,
+    sleepTimerMinutes,
     initListeners,
     restoreLastStation,
     play,
@@ -190,5 +235,7 @@ export const usePlaybackStore = defineStore('playback', () => {
     loadVolume,
     persistVolume,
     toggleMute,
+    armSleepTimer,
+    cancelSleepTimer,
   }
 })

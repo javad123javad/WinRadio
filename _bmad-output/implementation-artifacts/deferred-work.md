@@ -129,3 +129,27 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-6-system-tray-presence.md`
   summary: `tauri.conf.json`'s `systemTray.iconAsTemplate: true` is a macOS-specific setting (template-image recoloring for the macOS menu bar) left enabled in a Windows-only app (NSIS-only bundle target, `main.rs`'s Windows-gated code) — likely a harmless no-op on Windows, but worth confirming the tray icon renders correctly and removing the setting if it's confirmed to do nothing here.
   evidence: Code review flagged this config value as unrelated to any Windows tray behavior. Pre-existing since the app's original scaffold, unrelated to this story's default-flip change; now exercised by every user by default rather than only opt-ins.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-7-sleep-timer.md`
+  summary: There's no way for the frontend to query current sleep-timer status on demand — state only moves via one-shot push events (`sleep-timer-armed`/`sleep-timer-cleared`). Anything that starts listening after those events already fired (a late `initListeners`, a future secondary window) has no way to resync to "armed, N minutes" and will show unarmed indefinitely.
+  evidence: Code review confirmed `SleepTimer` has no status-query command. Matches the same push-only architecture already used consistently by every other feature (play/stop/reconnecting/metadata all work this way too, per Story 1.1's event model) — not a gap unique to this story.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-7-sleep-timer.md`
+  summary: No component-level test exists for the new `TransportBar.vue` sleep-timer UI itself (popover open/close, preset clicks, cancel row, outside-click dismissal, Escape dismissal) — only the Pinia store is tested.
+  evidence: Code review confirmed the only new test coverage is in `playback.test.ts` (store logic), none touching the component's DOM/event behavior. Same class of gap already logged for Stories 1.4/1.5 (no component-level test tooling); a genuine but larger infrastructure investment beyond a single story.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-7-sleep-timer.md`
+  summary: `armSleepTimer`/`cancelSleepTimer` failures are only `console.error`'d with no user-visible signal — combined with the popover closing immediately on click (before the round-trip event confirms anything), a failed arm/cancel is indistinguishable from a successful one to the user.
+  evidence: Code review confirmed both actions' catch blocks are console-only. Matches the same optimistic-persistence pattern already deferred for Story 1.3's `playback.play()`, Story 1.4's `toggleFavorite`, etc. — a consistent codebase-wide pattern, not unique to this story.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-7-sleep-timer.md`
+  summary: No guard against rapid double-clicks on different presets — two overlapping `set_sleep_timer` invokes have no ordering guarantee (the critical section that swaps the timer handle is properly mutex-protected, but the event `emit()` calls happen outside that lock, so under Tauri's multi-threaded async runtime a stale "armed" event could in principle arrive after a newer one).
+  evidence: Code review (edge-case-hunter + blind-hunter) both raised variants of this. Same class of gap already deferred for Stories 1.4/1.5 (no coalescing/sequencing on rapid actions); low real-world impact since the popover closes immediately on click, requiring the user to reopen and click again within milliseconds to trigger it.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-7-sleep-timer.md`
+  summary: The Sleep Timer icon button has `aria-expanded` and a dynamic `aria-label` but no `aria-haspopup`; opening the popover doesn't move focus into it, and closing via Escape/Cancel doesn't return focus to the trigger button — the disclosure pattern is only partially accessible.
+  evidence: Code review confirmed the gaps directly in `TransportBar.vue`. Not required by any stated AC or by EXPERIENCE.md's accessibility floor (which specifies Tab order, Esc-closes-Settings, focus rings, no color-only state — not focus management for every new popover), but worth a future accessibility pass.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-7-sleep-timer.md`
+  summary: The re-arm-supersedes-old-timer behavior (arming a new duration while one is already active correctly cancels the old one) is documented only by code comments, with no test verifying the superseded task actually goes inert rather than later calling `player.stop()`/emitting a second `sleep-timer-cleared`.
+  evidence: Code review identified this as the most subtle new logic in the diff. A genuine test would need `tokio::time::pause()`/`advance()` fake-time infrastructure not currently used anywhere in this codebase — valuable but non-trivial effort beyond this story's scope.

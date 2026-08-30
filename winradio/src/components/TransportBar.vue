@@ -53,14 +53,69 @@
         @change="onVolumeCommit"
       />
     </div>
+
+    <!-- Sleep Timer control (DESIGN.md.components.sleep-timer-control):
+         moon/clock icon, small active-badge dot when armed — the only
+         armed-state indicator, deliberately no countdown. -->
+    <div ref="timerControlRef" class="relative flex-shrink-0">
+      <button
+        type="button"
+        class="relative flex h-9 w-9 items-center justify-center rounded-full border border-outline text-on-surface transition-colors hover:bg-surface-raised-high"
+        :aria-label="playback.sleepTimerArmed ? 'Sleep timer armed, click to cancel' : 'Sleep timer'"
+        :aria-expanded="showTimerPopover"
+        @click="showTimerPopover = !showTimerPopover"
+      >
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12.3 3a9 9 0 108.7 11.2 7.5 7.5 0 01-8.7-11.2z" />
+        </svg>
+        <span
+          v-if="playback.sleepTimerArmed"
+          class="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-primary"
+          aria-hidden="true"
+        />
+      </button>
+
+      <Transition name="fade">
+        <div
+          v-if="showTimerPopover"
+          class="absolute bottom-full right-0 z-10 mb-2 w-40 rounded-sm bg-surface-raised-high p-2 shadow-none"
+        >
+          <!-- Presets are always shown, armed or not: picking one while
+               already armed re-arms/supersedes the old timer directly
+               (frozen I/O matrix, "Re-arm while already armed"). When
+               armed, a "Cancel timer" row is appended below them rather
+               than replacing them. -->
+          <button
+            v-for="minutes in presetMinutes"
+            :key="minutes"
+            type="button"
+            class="block w-full rounded-sm px-3 py-1.5 text-left text-body text-on-surface hover:bg-surface-raised"
+            :class="{ 'text-primary': minutes === settings.sleepTimerDefaultMinutes }"
+            @click="onArm(minutes)"
+          >
+            {{ minutes }} min
+          </button>
+          <button
+            v-if="playback.sleepTimerArmed"
+            type="button"
+            class="mt-1 block w-full rounded-sm border-t border-outline px-3 pt-2 pb-1.5 text-left text-body text-on-surface hover:bg-surface-raised"
+            @click="onCancel"
+          >
+            Cancel timer
+          </button>
+        </div>
+      </Transition>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { usePlaybackStore } from '@/stores/playback'
+import { useSettingsStore } from '@/stores/settings'
 
 const playback = usePlaybackStore()
+const settings = useSettingsStore()
 
 const isPlaying = computed(() => playback.isPlaying)
 const canTogglePlay = computed(() => !playback.reconnecting && (playback.isPlaying || !!playback.currentStation))
@@ -87,4 +142,57 @@ const togglePlay = () => {
     playback.play(playback.currentStation)
   }
 }
+
+// Sleep Timer control (Code Map / Tasks & Acceptance, spec-1-7): exactly
+// 15/30/60/90 min presets, always available (picking one while armed
+// re-arms/supersedes the running timer directly — frozen I/O matrix,
+// "Re-arm while already armed"), plus a "Cancel timer" row appended once
+// armed — the badged icon reopens this same popover, never a separate menu.
+const presetMinutes = [15, 30, 60, 90]
+const showTimerPopover = ref(false)
+const timerControlRef = ref<HTMLElement | null>(null)
+
+const onArm = (minutes: number) => {
+  playback.armSleepTimer(minutes)
+  showTimerPopover.value = false
+}
+
+const onCancel = () => {
+  playback.cancelSleepTimer()
+  showTimerPopover.value = false
+}
+
+// Listeners are attached for the component's whole lifetime (not toggled
+// on open/close) so the same click that opens the popover — which is still
+// bubbling up to `window` at the moment it's opened — can never be
+// misread as an "outside click" that immediately closes it again.
+const onDocumentClick = (event: MouseEvent) => {
+  if (!showTimerPopover.value) return
+  if (timerControlRef.value && !timerControlRef.value.contains(event.target as Node)) {
+    showTimerPopover.value = false
+  }
+}
+
+const onKeydown = (event: KeyboardEvent) => {
+  if (event.key === 'Escape') showTimerPopover.value = false
+}
+
+window.addEventListener('click', onDocumentClick)
+window.addEventListener('keydown', onKeydown)
+
+onBeforeUnmount(() => {
+  window.removeEventListener('click', onDocumentClick)
+  window.removeEventListener('keydown', onKeydown)
+})
 </script>
+
+<style scoped>
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.1s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+</style>

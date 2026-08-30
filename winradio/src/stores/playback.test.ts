@@ -106,4 +106,51 @@ describe('usePlaybackStore', () => {
       }))
     })
   })
+
+  describe('sleep timer', () => {
+    it('arms the timer via set_sleep_timer, but only reflects it once the armed event round-trips', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      const armPromise = playback.armSleepTimer(30)
+      // Not optimistic: still unarmed until the Rust-pushed event arrives.
+      expect(playback.sleepTimerArmed).toBe(false)
+
+      handlers['sleep-timer-armed']({ payload: { minutes: 30 } })
+      await armPromise
+
+      expect(invoke).toHaveBeenCalledWith('set_sleep_timer', { minutes: 30 })
+      expect(playback.sleepTimerArmed).toBe(true)
+      expect(playback.sleepTimerMinutes).toBe(30)
+    })
+
+    it('clears armed state when a sleep-timer-cleared event arrives (cancel or fire)', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      handlers['sleep-timer-armed']({ payload: { minutes: 15 } })
+      expect(playback.sleepTimerArmed).toBe(true)
+
+      handlers['sleep-timer-cleared']({ payload: undefined })
+
+      expect(playback.sleepTimerArmed).toBe(false)
+      expect(playback.sleepTimerMinutes).toBeNull()
+    })
+
+    it('cancelSleepTimer invokes set_sleep_timer with minutes: 0', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      handlers['sleep-timer-armed']({ payload: { minutes: 60 } })
+      expect(playback.sleepTimerArmed).toBe(true)
+
+      const cancelPromise = playback.cancelSleepTimer()
+      handlers['sleep-timer-cleared']({ payload: undefined })
+      await cancelPromise
+
+      expect(invoke).toHaveBeenCalledWith('set_sleep_timer', { minutes: 0 })
+      expect(playback.sleepTimerArmed).toBe(false)
+      expect(playback.sleepTimerMinutes).toBeNull()
+    })
+  })
 })
