@@ -89,12 +89,19 @@
 
           <ul>
             <StationRow
-              v-for="station in stationsStore.stations"
+              v-for="(station, index) in stationsStore.sortedStations"
               :key="station.id"
               :name="station.name"
               :is-current="isCurrent(station.id)"
               :is-playing="playbackStore.isPlaying"
+              :is-favorite="true"
+              :show-reorder="true"
+              :can-move-up="index > 0"
+              :can-move-down="index < stationsStore.sortedStations.length - 1"
               @play="stationsStore.playStation(station)"
+              @toggle-favorite="stationsStore.toggleFavorite(station)"
+              @move-up="stationsStore.moveUp(station.id)"
+              @move-down="stationsStore.moveDown(station.id)"
             />
           </ul>
         </template>
@@ -113,7 +120,10 @@
               :name="station.name"
               :is-current="isCurrent(station.id)"
               :is-playing="playbackStore.isPlaying"
+              :is-favorite="stationsStore.isFavorite(station.id)"
+              :show-reorder="false"
               @play="searchStore.playResult(station)"
+              @toggle-favorite="stationsStore.toggleFavorite(toPlayableStation(station))"
             />
           </ul>
           <p v-else-if="searchStore.status === 'loading'" class="text-caption text-on-surface-variant">
@@ -172,7 +182,7 @@ import SearchPanel from '@/components/SearchPanel.vue'
 import { useStationsStore } from '@/stores/stations'
 import { usePlaybackStore } from '@/stores/playback'
 import { useSettingsStore } from '@/stores/settings'
-import { useSearchStore } from '@/stores/search'
+import { useSearchStore, toPlayableStation } from '@/stores/search'
 
 const stationsStore = useStationsStore()
 const playbackStore = usePlaybackStore()

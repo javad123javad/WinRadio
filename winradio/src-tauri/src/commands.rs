@@ -17,6 +17,8 @@ pub struct Station {
     pub category: Option<String>,
     pub is_favorite: bool,
     pub added_at: i64,
+    #[serde(default)]
+    pub favorite_order: i64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

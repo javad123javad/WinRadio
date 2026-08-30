@@ -36,6 +36,23 @@ export type SearchStatus = 'idle' | 'loading' | 'ok' | 'zero-match' | 'offline'
 // bypasses the debounce and searches immediately.
 const DEBOUNCE_MS = 350
 
+// Adapts a search-result `DirectoryStation` into the persisted `Station`
+// shape — used both to play a result ephemerally (never persisted) and to
+// let `stationsStore.toggleFavorite` accept a `DirectoryStation` directly,
+// without App.vue doing ad-hoc field mapping (Code Map). Module-level (not
+// store state) since it's a pure shape conversion.
+export const toPlayableStation = (station: DirectoryStation): Station => ({
+  id: station.id,
+  name: station.name,
+  url: station.url,
+  faviconUrl: station.favicon,
+  homepage: undefined,
+  category: station.tags?.split(',')[0]?.trim() || station.country,
+  isFavorite: false,
+  addedAt: Date.now(),
+  favoriteOrder: 0,
+})
+
 export const useSearchStore = defineStore('search', () => {
   const query = ref('')
   const filters = ref<{ genre: string; country: string; language: string }>({
@@ -168,21 +185,6 @@ export const useSearchStore = defineStore('search', () => {
       filterOptionsLoading.value = false
     }
   }
-
-  // Adapts a search-result `DirectoryStation` into the persisted `Station`
-  // shape `playbackStore.play` expects, so clicking a search-result row
-  // (via the shared `StationRow`) plays immediately without ever persisting
-  // the result itself (Boundaries & Constraints -> Never: ephemeral only).
-  const toPlayableStation = (station: DirectoryStation): Station => ({
-    id: station.id,
-    name: station.name,
-    url: station.url,
-    faviconUrl: station.favicon,
-    homepage: undefined,
-    category: station.tags?.split(',')[0]?.trim() || station.country,
-    isFavorite: false,
-    addedAt: Date.now(),
-  })
 
   const playResult = (station: DirectoryStation) => {
     const playbackStore = usePlaybackStore()

@@ -69,3 +69,27 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-3-preview-play-from-search-results.md`
   summary: `StationRow.vue` has no accessible "currently playing" signal (`aria-pressed`/`aria-current`, or an accessible-name change) beyond a background-color class and a swapped icon — invisible to screen-reader users.
   evidence: Code review confirmed no ARIA state attributes on the row button. Pre-existing since Story 1.1's original row markup, carried over unchanged through extraction in Story 1.2.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-4-favorites-add-remove-reorder.md`
+  summary: `toggleFavorite`/`moveUp`/`moveDown` (`winradio/src/stores/stations.ts`) mutate in-memory state synchronously, then `await saveStations()` with no try/catch and no rollback — if persistence fails (disk error, IPC error), the UI and disk state can silently diverge with no user-visible signal.
+  evidence: Code review confirmed none of the three actions catch a `saveStations()` failure. Matches the existing optimistic-persistence pattern used everywhere else in the codebase (e.g. `settings.ts`, `playback.ts`), not something newly introduced by this story — worth addressing project-wide rather than as a one-off fix here.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-4-favorites-add-remove-reorder.md`
+  summary: No guard against overlapping/racing `saveStations()` calls — several fast clicks on the star or up/down arrows each kick off their own persist call, and nothing prevents an older in-flight write from resolving after (and clobbering) a newer one on disk.
+  evidence: Code review of `stations.ts`'s `toggleFavorite`/`moveUp`/`moveDown` found each independently awaits its own `saveStations()` with no sequencing/queue. Low real-world impact for a single user's local disk writes, but worth a guard if this pattern is extended to something latency-sensitive.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-4-favorites-add-remove-reorder.md`
+  summary: `StationRow.vue`'s row wrapper (needed to nest real `<button>`s for reorder/favorite) is a `role="button"` div that now contains 3 nested buttons, quadrupling tab stops per Favorites row versus the previous single-button design — worth reconsidering the interaction model (e.g. making the row itself non-focusable and relying on Tab landing on the play/star/reorder buttons directly) in a future accessibility pass.
+  evidence: Code review noted the row-plus-3-nested-buttons structure is a real navigation cost for keyboard/screen-reader users, though functional. Not blocking this story's ACs, but a legitimate design question beyond a trivial patch.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-4-favorites-add-remove-reorder.md`
+  summary: `favoriteOrder` values are never compacted after a removal (`nextFavoriteOrder` only computes `max + 1`) — gaps accumulate across repeated add/remove cycles and the counter only grows.
+  evidence: Code review confirmed no renumbering/normalization logic exists. Harmless in practice (i64 range, realistic personal-favorites-list sizes), pure tidiness rather than a correctness concern.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-4-favorites-add-remove-reorder.md`
+  summary: No component-level test tooling (`@vue/test-utils`, a DOM environment like jsdom/happy-dom) exists to test `StationRow.vue`'s actual DOM/event behavior directly (disabled states at reorder boundaries, `@click.stop` truly preventing the row's play handler, aria attribute correctness) — the new `vitest` suite only covers pure Pinia store logic.
+  evidence: Code review confirmed `stations.test.ts` is the repo's only test file and exercises no DOM. Adding component-testing infrastructure is a reasonable next increment given vitest itself was only just added this story, but is a larger investment beyond this story's scope.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-4-favorites-add-remove-reorder.md`
+  summary: `Station.isFavorite` is now provably always `true` for every persisted station, since `toggleFavorite` deletes rather than flipping the flag to `false` — the field is redundant given the current data model (the persisted collection only ever contains favorites).
+  evidence: Code review of `stations.ts`'s `toggleFavorite` confirmed removal always deletes the entry rather than setting `isFavorite: false`. Worth reconsidering if/when the data model changes (e.g. if a unified "all known stations" list is ever introduced), not urgent now — removing the field has ripple effects (wire format, TS interface) not worth it for this alone.
