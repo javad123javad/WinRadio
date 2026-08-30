@@ -51,6 +51,16 @@ export const usePlaybackStore = defineStore('playback', () => {
         errorMessage.value = null
         metadata.value = emptyMetadata()
         playStartedAt.value = Date.now()
+
+        // Persist which station was last played (spec-1-5, AC4) so it can
+        // be restored idle on the next launch. Full station snapshot, not
+        // just an id — see settings.ts. Fire-and-forget: a failed persist
+        // here shouldn't block playback UI state above. Pass the *live*
+        // slider volume (`volume.value`), same as `persistVolume` below —
+        // not a value cached on the settings store, which could be stale if
+        // this fires mid-drag before the slider's `change` event commits.
+        const settingsStore = useSettingsStore()
+        void settingsStore.setLastStation(event.payload, volume.value)
       })
 
       await listen('stop', () => {
@@ -85,6 +95,20 @@ export const usePlaybackStore = defineStore('playback', () => {
       console.error('Registering playback listeners failed:', e)
       throw e
     }
+  }
+
+  // Restores the last-played station's info into the Now-Playing area on
+  // app launch (spec-1-5, AC4) without playing it: sets `currentStation`
+  // only — never `isPlaying`, never calls `play()`. The existing dashboard
+  // template (`v-if="playbackStore.currentStation"`) already renders idle
+  // correctly once this is set. Defensive guard: never overwrite a station
+  // that's already actually playing — today's startup ordering can't
+  // trigger this (no auto-play path exists, and nothing `await`s between
+  // settings loading and this call), but it costs nothing to protect
+  // against a future refactor that changes that ordering.
+  const restoreLastStation = (station: Station | null | undefined) => {
+    if (isPlaying.value || !station) return
+    currentStation.value = station
   }
 
   const play = async (station: Station) => {
@@ -159,6 +183,7 @@ export const usePlaybackStore = defineStore('playback', () => {
     errorMessage,
     playStartedAt,
     initListeners,
+    restoreLastStation,
     play,
     stop,
     setVolume,

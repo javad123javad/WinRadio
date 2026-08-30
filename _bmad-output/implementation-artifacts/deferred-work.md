@@ -93,3 +93,23 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-4-favorites-add-remove-reorder.md`
   summary: `Station.isFavorite` is now provably always `true` for every persisted station, since `toggleFavorite` deletes rather than flipping the flag to `false` — the field is redundant given the current data model (the persisted collection only ever contains favorites).
   evidence: Code review of `stations.ts`'s `toggleFavorite` confirmed removal always deletes the entry rather than setting `isFavorite: false`. Worth reconsidering if/when the data model changes (e.g. if a unified "all known stations" list is ever introduced), not urgent now — removing the field has ripple effects (wire format, TS interface) not worth it for this alone.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-5-transport-controls-play-pause-volume-mute.md`
+  summary: A successful reconnect re-emits the same `play` event for the *same* station (per `run_playback`'s retry loop), which redundantly re-triggers `setLastStation`/a full `save_settings` disk write even though nothing actually changed.
+  evidence: Code review confirmed `RadioPlayer::run_playback` emits `play` on every successful connect, including reconnects after a drop, and `playback.ts`'s `play` listener unconditionally calls `setLastStation` on every such event. Correct but wasteful; could dedupe by comparing against the already-stored `lastStation.id` before writing.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-5-transport-controls-play-pause-volume-mute.md`
+  summary: No coalescing/sequencing on the new `setLastStation`-triggered `save_settings` writes — rapidly switching stations fires overlapping, unawaited persist calls with no ordering guarantee, so the persisted `lastStation` could in principle end up reflecting an earlier click rather than the most recent one if writes complete out of order.
+  evidence: Code review found each `play` event independently awaits its own `saveSettings()` call with no queue/sequencing token. Same class of gap already deferred for Story 1.4's `toggleFavorite`/`moveUp`/`moveDown`; low real-world impact for a single user's local IPC calls, which are fast enough that true reordering is unlikely, but worth a guard if this pattern is extended to something latency-sensitive.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-5-transport-controls-play-pause-volume-mute.md`
+  summary: `Store::save()` (`winradio/src-tauri/src/store.rs`) writes `store.json` in place via plain `std::fs::write`, with no temp-file+rename and no fsync — a crash mid-write can corrupt the file. This story increases write frequency substantially (a full settings write now happens on every station play, not just on explicit settings/volume changes), raising the practical odds of hitting this pre-existing risk.
+  evidence: Code review confirmed `Store::save()`'s implementation is unchanged since Story 1.1 but is now invoked far more often via the new `setLastStation` path. Worth an atomic write (write to a temp file, then rename) given the increased exposure.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-5-transport-controls-play-pause-volume-mute.md`
+  summary: The persisted `lastStation` snapshot can silently diverge from a station's live record in `stationsStore` (if it's later favorited, renamed, reordered, or unfavorited after being played) — `restoreLastStation` never reconciles by id against the current Favorites list, it just displays the frozen snapshot verbatim.
+  evidence: Code review traced `restoreLastStation` (`playback.ts`) and confirmed no reconciliation against `stationsStore.stations`. Currently harmless since the Now-Playing idle display only reads `name`/`category` (not `isFavorite`/`favoriteOrder`/`addedAt`), but worth revisiting if the display ever surfaces those fields.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-5-transport-controls-play-pause-volume-mute.md`
+  summary: No frontend component/integration test harness exists to cover `App.vue`'s actual `onMounted` startup wiring (that `restoreLastStation` runs only after `loadSettings` resolves, with the right argument) — a regression in that ordering could ship with a fully green test suite, since the existing store-level tests only exercise `restoreLastStation`/`loadSettings` in isolation, never the real startup sequence together.
+  evidence: Code review (verification-gap layer) confirmed no `App.test.ts`/component test exists and traced that neither `playback.test.ts` nor `settings.test.ts` touches `App.vue`. Same class of gap already logged for Story 1.4 (no component-level test tooling); a genuine but larger infrastructure investment beyond a single story.

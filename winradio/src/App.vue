@@ -261,6 +261,11 @@ onMounted(async () => {
     playbackStore.loadVolume(),
   ])
 
+  // AC4: show the last-played station's info idle (not auto-playing) once
+  // settings have resolved — `restoreLastStation` only sets `currentStation`,
+  // never `isPlaying`/`play()` (spec-1-5).
+  playbackStore.restoreLastStation(settingsStore.lastStation)
+
   applyTheme()
 })
 </script>

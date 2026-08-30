@@ -28,6 +28,12 @@ pub struct Settings {
     pub sleep_timer_default_minutes: u32,
     pub theme: String,
     pub volume: f32,
+    // Full station snapshot, not just an id: a last-played station that was
+    // never favorited has no other persisted record once the app restarts
+    // (search results are never written to store.json), so an id-only
+    // reference would be unresolvable for that case (spec-1-5).
+    #[serde(default)]
+    pub last_station: Option<Station>,
 }
 
 impl Default for Settings {
@@ -37,6 +43,7 @@ impl Default for Settings {
             sleep_timer_default_minutes: 30,
             theme: "system".to_string(),
             volume: 0.7,
+            last_station: None,
         }
     }
 }
