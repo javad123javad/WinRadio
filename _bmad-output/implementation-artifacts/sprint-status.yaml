@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-25-2026 12:00
-last_updated: 08-30-2026 13:30
+last_updated: 09-04-2026
 project: WinRadio
 project_key: NOKEY
 tracking_system: file-system
@@ -43,7 +43,7 @@ development_status:
   1-5-transport-controls-play-pause-volume-mute: review
   1-6-system-tray-presence: review
   1-7-sleep-timer: review
-  1-8-settings-tray-behavior-sleep-timer-default-theme: backlog
+  1-8-settings-tray-behavior-sleep-timer-default-theme: review
   epic-1-retrospective: optional
 
   epic-2: backlog

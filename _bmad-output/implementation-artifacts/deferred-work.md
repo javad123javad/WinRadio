@@ -153,3 +153,51 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-7-sleep-timer.md`
   summary: The re-arm-supersedes-old-timer behavior (arming a new duration while one is already active correctly cancels the old one) is documented only by code comments, with no test verifying the superseded task actually goes inert rather than later calling `player.stop()`/emitting a second `sleep-timer-cleared`.
   evidence: Code review identified this as the most subtle new logic in the diff. A genuine test would need `tokio::time::pause()`/`advance()` fake-time infrastructure not currently used anywhere in this codebase — valuable but non-trivial effort beyond this story's scope.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-8-settings-tray-behavior-sleep-timer-default-theme.md`
+  summary: `SettingsModal.vue`'s overlay has no `role="dialog"`, `aria-modal="true"`, or `aria-labelledby` pointing at its "Settings" heading, so assistive tech doesn't announce it as a modal dialog tied to that title.
+  evidence: Code review confirmed the overlay `<div>` carries none of these attributes. Pre-existing since Story 1.1's scaffolding built this modal; not required by this story's frozen ACs (Tab order, Esc-closes, visible focus rings — no ARIA-dialog-semantics requirement stated), but a real screen-reader gap.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-8-settings-tray-behavior-sleep-timer-default-theme.md`
+  summary: The Settings modal has no focus trap, no initial-focus-on-open, and no focus-restoration-to-the-trigger-button on close — a keyboard user can Tab out of the open modal into the nav/rail/transport bar behind the overlay, and focus is simply abandoned wherever it was after Esc/Close.
+  evidence: Code review confirmed no focus-management code exists in `SettingsModal.vue`. Deliberately not treated as a violation of this story's own AC3, whose "Tab order follows nav→rail→transport→settings" wording describes exactly one linear whole-app sequence ending at Settings — which the current untrapped behavior actually satisfies, as directly observed live (Vite dev server, accessibility-tree inspection: Settings' Close/checkbox/selects/Close consistently appear last in tab order). Still a real general modal-accessibility gap worth a future pass.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-8-settings-tray-behavior-sleep-timer-default-theme.md`
+  summary: The "Sleep Timer default" and "Theme" rows wrap their `<select>` in a plain `<div>`+`<span>` instead of a `<label>` (unlike the "Minimize to tray" row just above, which correctly uses `<label>`), so those two selects' accessible names aren't programmatically associated with their visible row text.
+  evidence: Code review confirmed the markup inconsistency directly in `SettingsModal.vue` (lines ~29-54 vs. ~19-27). Pre-existing since Story 1.1; a small, isolated a11y fix for a future pass.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-8-settings-tray-behavior-sleep-timer-default-theme.md`
+  summary: `saveSettings`/`loadSettings` failures are only `console.error`'d with no user-visible signal — given this story's own AC1 framing ("closing the modal is the only confirmation"), a toggle whose persistence silently failed (disk full, permissions) looks identical to one that succeeded.
+  evidence: Code review confirmed both catch blocks in `settings.ts` are console-only, and `SettingsModal.vue`'s `onChange` doesn't await or surface the result. Matches the same optimistic-persistence pattern already deferred for Stories 1.3/1.4/1.7 — a consistent codebase-wide pattern, not unique to this story.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-8-settings-tray-behavior-sleep-timer-default-theme.md`
+  summary: No debounce or change-coalescing on the Sleep Timer default / Theme `<select>` elements — each `change` event (which some browsers can fire per keyboard arrow-step through options) round-trips synchronously to `save_settings`, which does a blocking `std::fs::write` on every call.
+  evidence: Code review traced `onChange` -> `saveSettings` -> `store::save_settings` -> `Store::save()`'s synchronous file write. Low real-world impact (settings changes are infrequent, deliberate user actions) but a real, unbounded-repetition path.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-8-settings-tray-behavior-sleep-timer-default-theme.md`
+  summary: No component-level test exists for `SettingsModal.vue` (immediate-apply on toggle, Esc-closes, Close-button) or for `TransportBar.vue`'s consumption of `sleepTimerDefaultMinutes` for preset pre-fill/highlight — this story's three ACs are verified only by live manual testing, not by an automated regression test.
+  evidence: Code review confirmed `settings.test.ts` covers only the Pinia store, nothing DOM/event-level. Same class of gap already logged for Stories 1.4/1.5/1.7 (no component-level test tooling in this project) — a genuine but larger infrastructure investment beyond a single story; this entry specifically flags that Story 1.8's own ACs are among the now-uncovered behaviors.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-8-settings-tray-behavior-sleep-timer-default-theme.md`
+  summary: The Sleep Timer default preset highlighted in `TransportBar.vue`'s popover is conveyed by color alone (`text-primary` class, no icon/text/`aria-current` marker), which runs against EXPERIENCE.md's stated accessibility floor ("no state conveyed by color alone").
+  evidence: Code review confirmed the highlight is a single conditional Tailwind color class with no other differentiator. Pre-existing since Story 1.7 built this popover; EXPERIENCE.md's color-alone rule is a cross-cutting requirement, not specific to Story 1.8, but this story is the first to formally exercise the "pre-fill" AC that surfaces it.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-8-settings-tray-behavior-sleep-timer-default-theme.md`
+  summary: `App.vue`'s `applyTheme()` runs twice on startup — once reactively via `watch(() => settingsStore.theme, applyTheme)` firing when `loadSettings()` mutates `theme.value`, and again explicitly at the end of `onMounted` — redundant, and easy to get subtly wrong if load ordering ever changes.
+  evidence: Code review traced both call sites in `App.vue` (the `watch` declaration and the final `onMounted` line). Harmless today since `applyTheme()` is idempotent, but worth simplifying to a single call site.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-8-settings-tray-behavior-sleep-timer-default-theme.md`
+  summary: There's a window between app mount and `loadSettings()` resolving during which the Settings modal is already reachable with in-memory default values; a change made in that window is silently overwritten once the load response replaces the refs.
+  evidence: Code review traced `settings.ts`'s `loadSettings()` unconditionally overwriting `minimizeToTray`/`sleepTimerDefaultMinutes`/`theme` refs on resolution, with no check for an intervening user edit. Narrow timing window (load is typically near-instant against local disk), but a real race.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-8-settings-tray-behavior-sleep-timer-default-theme.md`
+  summary: No validation or clamping of `sleepTimerDefaultMinutes` on either side — the Rust `Settings` struct accepts any `u32`, and the frontend doesn't guard against a hand-edited `store.json` value outside {15, 30, 60, 90}; it degrades gracefully (no preset highlighted in the popover) but silently, with no snap-to-nearest-valid-preset.
+  evidence: Code review confirmed neither `commands.rs`'s `Settings` struct nor `settings.ts`/`TransportBar.vue` constrain this value. Pre-existing since Story 1.7; low real-world likelihood (value is only ever written by the app's own `<select>`, whose options are fixed).
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-8-settings-tray-behavior-sleep-timer-default-theme.md`
+  summary: Two independent window-level Escape-key listeners exist (`SettingsModal.vue`'s and `TransportBar.vue`'s Sleep Timer popover's), neither calling `stopPropagation` — if both the Settings modal and the Sleep Timer popover were ever open simultaneously, one Escape press would close both instead of just the topmost.
+  evidence: Code review confirmed both listeners independently check `event.key === 'Escape'` with no coordination. In practice the two can't currently both be open (opening Settings requires a click outside the popover's trigger, which already closes the popover via its own outside-click handler), making this a latent rather than currently-reachable issue.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-8-settings-tray-behavior-sleep-timer-default-theme.md`
+  summary: The Theme `<select>`'s "System" option gives no indication of which concrete theme (light or dark) it's currently resolving to based on the OS preference.
+  evidence: Code review confirmed `SettingsModal.vue` only ever shows the literal stored value ("System"/"Light"/"Dark"), never the resolved one. Minor UX polish gap, not required by any stated AC.
