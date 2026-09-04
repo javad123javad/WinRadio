@@ -201,3 +201,31 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-8-settings-tray-behavior-sleep-timer-default-theme.md`
   summary: The Theme `<select>`'s "System" option gives no indication of which concrete theme (light or dark) it's currently resolving to based on the OS preference.
   evidence: Code review confirmed `SettingsModal.vue` only ever shows the literal stored value ("System"/"Light"/"Dark"), never the resolved one. Minor UX polish gap, not required by any stated AC.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-1-now-playing-metadata-display.md`
+  summary: No component-level test exists for `App.vue`'s now-playing panel itself (blank subtext when no title, populated subtext when title/artist present) — this story's own acceptance criteria are verified only by live manual testing (Pinia state injected directly in a running dev server), not by an automated regression test.
+  evidence: Code review confirmed the only new coverage is store-level (`playback.test.ts`'s `metadata-updated`/`play`/`stop`/`playback-error` tests). Same class of gap already logged for Stories 1.4/1.5/1.7/1.8 (no component-level test tooling in this project) — this entry specifically flags that Story 2.1's own template-level ACs are among the now-uncovered behaviors.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-1-now-playing-metadata-display.md`
+  summary: `RadioPlayer::stop()` (`player.rs`) does not clear `self.metadata`, unlike `play()` which does — an inconsistency in the same struct, currently harmless only because nothing calls the `get_metadata` command (see next entry).
+  evidence: Code review confirmed `play()` resets metadata internally but `stop()` does not. No observable effect today since the frontend never queries `get_metadata`, but worth fixing for consistency if that command ever gets a real caller.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-1-now-playing-metadata-display.md`
+  summary: The `get_metadata` Tauri command (and its `player.rs` implementation) is dead code — nothing in the frontend ever calls `invoke('get_metadata')`. There is no way to resync the now-playing subtext to the current ICY state if a listener starts late (e.g. after a page reload or a future secondary window) short of waiting for the next tag change.
+  evidence: Code review confirmed the command exists and is registered but has zero call sites in `src/`. Pre-existing since an earlier story wired the command speculatively; worth either using it for a resync-on-load path or removing it.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-1-now-playing-metadata-display.md`
+  summary: `Station.category` is now orphaned dead data — its only UI consumer was the fallback subtext this story removed (it violated AC2's "simply blank" requirement). `stations.ts` still declares, seeds, and copies the field; `search.ts`'s `toPlayableStation` still derives it from Directory tags; nothing renders it anywhere.
+  evidence: Code review confirmed via a full grep of `src/` that no template or computed value reads `.category` after this story's fix. Worth an explicit decision (remove the field, or document it as reserved for a future tile) rather than leaving it silently computed and persisted for no consumer.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-1-now-playing-metadata-display.md`
+  summary: `Metadata.album`/`Metadata.artworkUrl` are unused, always-empty fields on both sides — Rust's `handle_metadata` hardcodes them to empty strings, and the frontend `Metadata` interface carries both but nothing reads or displays them.
+  evidence: Code review confirmed neither field has a real producer or consumer. Pre-existing scaffolding from Story 1.1; harmless, but a reader could easily mistake their presence for "album art is already supported."
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-1-now-playing-metadata-display.md`
+  summary: A raw ICY title like `"Artist - "` (trailing separator, empty remainder) parses to a non-empty `artist` but an empty `title`; since the frontend gates the entire subtext on `v-if="playbackStore.metadata.title"`, a genuine non-empty artist tag would be silently dropped instead of shown — arguably a violation of "show it when the stream provides it," not just a coincidental blank state.
+  evidence: Code review traced `handle_metadata`'s `split_once(" - ")` in `player.rs` against `App.vue`'s title-only gate. Pre-existing gating logic, not touched by this story's fix (which only removed the no-metadata fallback branch); a narrow real-world edge case worth a future look.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-1-now-playing-metadata-display.md`
+  summary: The `reconnecting` event leaves the last-known metadata in place with no explicit test or comment confirming that's intentional (as opposed to the newly-added `playback-error` handling, which now clears it).
+  evidence: Code review flagged the asymmetry. Arguably correct by design — `reconnecting` means the same stream is momentarily interrupted, not abandoned, so keeping the last known title makes sense until it either resumes (new `metadata-updated`) or gives up (`playback-error`, now cleared) — but this reasoning wasn't previously written down anywhere.

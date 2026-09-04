@@ -150,11 +150,11 @@
           </p>
           <p v-else class="text-display text-on-surface-variant">No station selected</p>
 
+          <!-- No ICY metadata is normal, not an error state — the subtext
+               is simply blank rather than a category/generic-label
+               fallback (spec-2-1, AC2). -->
           <p v-if="playbackStore.metadata.title" class="mt-1 text-body text-on-surface-variant">
             {{ playbackStore.metadata.title }}<span v-if="playbackStore.metadata.artist"> — {{ playbackStore.metadata.artist }}</span>
-          </p>
-          <p v-else-if="playbackStore.currentStation" class="mt-1 text-body text-on-surface-variant">
-            {{ playbackStore.currentStation.category || 'Radio' }}
           </p>
         </section>
 

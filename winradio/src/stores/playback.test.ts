@@ -107,6 +107,61 @@ describe('usePlaybackStore', () => {
     })
   })
 
+  describe('metadata (spec-2-1)', () => {
+    it('metadata-updated sets metadata from the event payload', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      handlers['metadata-updated']({
+        payload: { title: 'Some Great Song', artist: 'A Cool Artist', album: '', artworkUrl: '' },
+      })
+
+      expect(playback.metadata.title).toBe('Some Great Song')
+      expect(playback.metadata.artist).toBe('A Cool Artist')
+    })
+
+    it('play resets metadata to empty, so a new station never shows the previous one\'s stale title', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      handlers['metadata-updated']({
+        payload: { title: 'Old Song', artist: 'Old Artist', album: '', artworkUrl: '' },
+      })
+      handlers['play']({ payload: makeStation('a') })
+
+      expect(playback.metadata.title).toBe('')
+      expect(playback.metadata.artist).toBe('')
+    })
+
+    it('stop resets metadata to empty (AC2: no lingering title once nothing is playing)', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      handlers['metadata-updated']({
+        payload: { title: 'Some Song', artist: '', album: '', artworkUrl: '' },
+      })
+      handlers['stop']({ payload: undefined })
+
+      expect(playback.metadata.title).toBe('')
+    })
+
+    // Code review finding: a stale title from before a genuine playback
+    // failure would misrepresent what's actually playing — unlike
+    // `reconnecting`, which keeps the last known title since it's the same
+    // stream momentarily interrupted, not abandoned.
+    it('playback-error resets metadata to empty', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      handlers['metadata-updated']({
+        payload: { title: 'Some Song', artist: '', album: '', artworkUrl: '' },
+      })
+      handlers['playback-error']({ payload: { reason: "Couldn't play this station" } })
+
+      expect(playback.metadata.title).toBe('')
+    })
+  })
+
   describe('sleep timer', () => {
     it('arms the timer via set_sleep_timer, but only reflects it once the armed event round-trips', async () => {
       const playback = usePlaybackStore()

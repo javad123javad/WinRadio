@@ -91,6 +91,10 @@ export const usePlaybackStore = defineStore('playback', () => {
         reconnecting.value = false
         errorMessage.value = event.payload.reason
         playStartedAt.value = null
+        // Playback has genuinely stopped (not just interrupted mid-retry
+        // like `reconnecting`) — a stale track title from before the
+        // failure would misrepresent what's actually playing (spec-2-1).
+        metadata.value = emptyMetadata()
       })
 
       await listen<Metadata>('metadata-updated', (event) => {
