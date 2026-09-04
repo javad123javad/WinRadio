@@ -162,6 +162,141 @@ describe('usePlaybackStore', () => {
     })
   })
 
+  describe('location (spec-2-2)', () => {
+    it('ok:true with coordinates shows nothing until get_location_tile resolves, then populates country + tile', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      let resolveTile!: (value: string) => void
+      vi.mocked(invoke).mockImplementation((cmd: string) => {
+        if (cmd === 'get_location_tile') return new Promise((resolve) => (resolveTile = resolve))
+        return Promise.resolve(undefined)
+      })
+
+      handlers['location-updated']({
+        payload: { ok: true, data: { country: 'Belgium', geoLat: 50.85, geoLong: 4.35 }, reason: null },
+      })
+
+      // Country known already, but never shown without the map (frozen
+      // "never a partial state" constraint) — status is 'ok' yet no
+      // tileImage yet.
+      expect(playback.location.status).toBe('ok')
+      expect(playback.location.tileImage).toBeNull()
+      expect(invoke).toHaveBeenCalledWith('get_location_tile', { lat: 50.85, long: 4.35 })
+
+      resolveTile('data:image/png;base64,abc')
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(playback.location.status).toBe('ok')
+      expect(playback.location.country).toBe('Belgium')
+      expect(playback.location.tileImage).toBe('data:image/png;base64,abc')
+    })
+
+    it('ok:false (no coordinates) resolves to unavailable immediately, with no tile fetch attempted', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      handlers['location-updated']({
+        payload: { ok: false, data: null, reason: 'Location unknown' },
+      })
+
+      expect(playback.location.status).toBe('unavailable')
+      expect(playback.location.tileImage).toBeNull()
+      expect(invoke).not.toHaveBeenCalledWith('get_location_tile', expect.anything())
+    })
+
+    it('a tile fetch failure resolves to the same unavailable placeholder as no-coordinates — never a partial (country-only) state', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      vi.mocked(invoke).mockImplementation((cmd: string) => {
+        if (cmd === 'get_location_tile') return Promise.reject('network error')
+        return Promise.resolve(undefined)
+      })
+
+      handlers['location-updated']({
+        payload: { ok: true, data: { country: 'Belgium', geoLat: 50.85, geoLong: 4.35 }, reason: null },
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(playback.location.status).toBe('unavailable')
+      expect(playback.location.country).toBeNull()
+      expect(playback.location.tileImage).toBeNull()
+    })
+
+    it('play resets location to idle, so a new station never shows the previous one\'s stale tile', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      handlers['location-updated']({
+        payload: { ok: true, data: { country: 'Belgium', geoLat: 50.85, geoLong: 4.35 }, reason: null },
+      })
+      await Promise.resolve()
+      handlers['play']({ payload: makeStation('a') })
+
+      expect(playback.location.status).toBe('idle')
+      expect(playback.location.country).toBeNull()
+    })
+
+    it('stop resets location to idle', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      handlers['location-updated']({
+        payload: { ok: true, data: { country: 'Belgium', geoLat: 50.85, geoLong: 4.35 }, reason: null },
+      })
+      handlers['stop']({ payload: undefined })
+
+      expect(playback.location.status).toBe('idle')
+    })
+
+    it('playback-error resets location to idle', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      handlers['location-updated']({
+        payload: { ok: true, data: { country: 'Belgium', geoLat: 50.85, geoLong: 4.35 }, reason: null },
+      })
+      handlers['playback-error']({ payload: { reason: "Couldn't play this station" } })
+
+      expect(playback.location.status).toBe('idle')
+    })
+
+    it('a superseded tile fetch (station switched mid-fetch) never clobbers the newer station\'s location', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      let resolveFirstTile!: (value: string) => void
+      vi.mocked(invoke).mockImplementation((cmd: string) => {
+        if (cmd === 'get_location_tile') return new Promise((resolve) => (resolveFirstTile = resolve))
+        return Promise.resolve(undefined)
+      })
+
+      // First station starts playing and its tile fetch begins...
+      handlers['location-updated']({
+        payload: { ok: true, data: { country: 'Belgium', geoLat: 50.85, geoLong: 4.35 }, reason: null },
+      })
+
+      // ...but a second station takes over before that fetch resolves.
+      handlers['play']({ payload: makeStation('b') })
+      handlers['location-updated']({
+        payload: { ok: false, data: null, reason: 'Location unknown' },
+      })
+
+      // The first (now-stale) fetch finally resolves.
+      resolveFirstTile('data:image/png;base64,stale')
+      await Promise.resolve()
+      await Promise.resolve()
+
+      // Must still reflect the second station's (unavailable) state, not
+      // the first station's late-arriving tile.
+      expect(playback.location.status).toBe('unavailable')
+      expect(playback.location.tileImage).toBeNull()
+    })
+  })
+
   describe('sleep timer', () => {
     it('arms the timer via set_sleep_timer, but only reflects it once the armed event round-trips', async () => {
       const playback = usePlaybackStore()

@@ -6408,6 +6408,7 @@ dependencies = [
 name = "winradio"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "dirs",
  "http 1.5.0",
  "icy-metadata",

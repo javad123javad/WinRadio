@@ -13,6 +13,11 @@ export interface Station {
   isFavorite: boolean
   addedAt: number
   favoriteOrder: number
+  // spec-2-2: read synchronously off this cached record by the Location
+  // Tile (AD-5 "no redundant fetching") — never re-fetched.
+  country?: string
+  geoLat?: number
+  geoLong?: number
 }
 
 // A station-shaped object from elsewhere (e.g. a search result) that hasn't
@@ -140,6 +145,9 @@ export const useStationsStore = defineStore('stations', () => {
         isFavorite: true,
         addedAt: candidate.addedAt ?? Date.now(),
         favoriteOrder: nextFavoriteOrder(stations.value),
+        country: candidate.country,
+        geoLat: candidate.geoLat,
+        geoLong: candidate.geoLong,
       }
       stations.value = [...stations.value, station]
     }

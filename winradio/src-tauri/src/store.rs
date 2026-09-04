@@ -267,6 +267,9 @@ mod tests {
             is_favorite: false,
             added_at: 0,
             favorite_order: 0,
+            country: None,
+            geo_lat: None,
+            geo_long: None,
         };
         let mut settings = Settings::default();
         settings.last_station = Some(station);
@@ -324,5 +327,29 @@ mod tests {
 
         assert_eq!(data.stations.len(), 1);
         assert_eq!(data.stations[0].favorite_order, 0);
+    }
+
+    #[test]
+    fn missing_location_fields_default_instead_of_failing_the_whole_station() {
+        // Simulates a store.json written before `country`/`geoLat`/`geoLong`
+        // existed (spec-2-2) — `#[serde(default)]` must let it parse instead
+        // of dropping the station (or the whole collection) entirely. Same
+        // back-compat shape as `missing_favorite_order_defaults_instead_of_
+        // failing_the_whole_station` above.
+        let content = r#"{
+            "stations": [
+                {"id": "a", "name": "Station A", "url": "https://a.example/stream",
+                 "faviconUrl": null, "homepage": null, "category": null,
+                 "isFavorite": true, "addedAt": 123}
+            ],
+            "settings": {}
+        }"#;
+
+        let data = Store::parse_store_data(content);
+
+        assert_eq!(data.stations.len(), 1);
+        assert_eq!(data.stations[0].country, None);
+        assert_eq!(data.stations[0].geo_lat, None);
+        assert_eq!(data.stations[0].geo_long, None);
     }
 }

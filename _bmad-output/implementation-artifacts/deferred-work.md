@@ -229,3 +229,35 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-1-now-playing-metadata-display.md`
   summary: The `reconnecting` event leaves the last-known metadata in place with no explicit test or comment confirming that's intentional (as opposed to the newly-added `playback-error` handling, which now clears it).
   evidence: Code review flagged the asymmetry. Arguably correct by design — `reconnecting` means the same stream is momentarily interrupted, not abandoned, so keeping the last known title makes sense until it either resumes (new `metadata-updated`) or gives up (`playback-error`, now cleared) — but this reasoning wasn't previously written down anywhere.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-2-location-tile.md`
+  summary: `store.rs`'s `parse_store_data` decodes the entire `stations` array as one `Vec<Station>` in a single `serde_json::from_value` call — one malformed field on any single station (e.g. a hand-edited `geoLat` sent as a string) fails the whole array and falls back to `Vec::default()`, silently wiping *every* favorited station, not just the bad one.
+  evidence: Code review confirmed `parse_store_data` (`store.rs`) has no per-entry resilience, unlike `directory.rs`'s `parse_stations` (Story 1.2), which already uses `filter_map` to skip individually-malformed search results. Pre-existing since Story 1.1's original store shape — adding `country`/`geoLat`/`geoLong` in this story increases the surface area of fields that could be malformed, but the underlying whole-array-decode fragility predates this story.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-2-location-tile.md`
+  summary: `LocationTile.vue` has no fallback text when a station has valid coordinates but a `null` country (Radio-Browser sometimes omits it) — the template interpolates `location.country` directly, rendering a blank line above the map instead of e.g. "Unknown country".
+  evidence: Code review confirmed `location_info_for`'s own doc comment states country is "carried through even if absent (never blocks on it)", i.e. this combination is expected to occur, but no test exercises `country: null` with coordinates present, and the template has no `v-else`/fallback text for it.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-2-location-tile.md`
+  summary: No caching of fetched OSM tiles across a session — replaying a favorite or switching back to a previously-played station re-fetches the identical tile from `tile.openstreetmap.org` every time, even though nothing about that station's map image ever changes.
+  evidence: Code review confirmed neither the Rust command nor the Pinia store cache tile bytes by coordinate/station. OSM's tile usage policy expects local caching rather than repeated identical requests; the narrower "same station reconnects after a stream drop" case was fixed directly in this review round (see Spec Change Log), but the general cross-session-replay case is a larger, separate caching design this story didn't scope.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-2-location-tile.md`
+  summary: Rapid station switching fires one live HTTP request per switch to the OSM tile server with no cancellation of the now-superseded in-flight request — `locationRequestSeq` correctly discards the stale *result* so no incorrect state is ever shown, but the underlying network request still runs to completion regardless.
+  evidence: Code review confirmed `get_location_tile`'s `reqwest` call has no `AbortController`/cancellation wiring. State correctness is unaffected (verified by the existing supersession test), so this is a network-politeness/resource-waste concern only, not a correctness bug.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-2-location-tile.md`
+  summary: `get_location_tile`'s success path (a real 2xx response's bytes correctly base64-encoded) and its non-2xx-status branch (e.g. a reachable server returning 404) are both untested — the only new test for this command exercises the connection-refused path alone.
+  evidence: Code review confirmed via `directory.rs`'s test module that no test spins up a real HTTP responder for this command. Closing this gap would need a local-mock-HTTP-server test technique not currently used anywhere in this codebase (existing tests only simulate "connection refused" via an unreachable port) — a real but non-trivial test-infrastructure investment.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-2-location-tile.md`
+  summary: No component-level test covers `App.vue`'s Info Tile grid wiring — nothing asserts the grid still renders exactly three tiles after this story replaced the reserved "Location" div with `<LocationTile />`, even though DESIGN.md calls out "exactly three, never a fourth" (SM-C1) as a deliberate counter-metric against scope drift.
+  evidence: Code review confirmed no test touches `App.vue`'s template. Same class of gap already logged for Stories 1.4/1.5/1.7/1.8/2.1 (no component-level test tooling in this project).
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-2-location-tile.md`
+  summary: The "© OpenStreetMap contributors" attribution in `LocationTile.vue` is plain unlinked text rather than a hyperlink to `openstreetmap.org/copyright`, which is the customary (though not strictly mandated) way tile consumers satisfy OSM's attribution expectation.
+  evidence: Code review confirmed the caption is a plain `<p>` with no `<a>`. Minor polish gap; no other external link exists anywhere else in the app to match a styling convention against.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-2-location-tile.md`
+  summary: The fetched OSM raster tile has no dark-theme treatment (no CSS filter, no themed placeholder) — OSM's standard tile style is light/white-background, which will read as a jarring bright rectangle against WinRadio's deliberately dark, flat "Metro" surface design.
+  evidence: Code review flagged the visual mismatch; confirmed neither DESIGN.md nor the architecture doc addresses tile theming anywhere, and no alternative (dark-styled) tile source is sanctioned by AD-12. An open design question, not a coding gap — needs a human aesthetic call (a CSS filter hack vs. accepting the mismatch vs. a different tile provider) rather than a guessed fix.

@@ -7,8 +7,11 @@
 //! returns `Err(CONNECT_ERROR)`; a successful call that simply matched
 //! nothing returns `Ok(vec![])`.
 
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+
+use crate::commands::Station;
 
 const BASE_URL: &str = "https://all.api.radio-browser.info";
 const USER_AGENT: &str = "WinRadio/0.1";
@@ -257,6 +260,116 @@ pub async fn get_filter_options() -> Result<FilterOptions, String> {
     get_filter_options_at(BASE_URL).await
 }
 
+// --- Location Tile (spec-2-2) -----------------------------------------
+//
+// Two independent concerns, deliberately kept separate: `location_info_for`
+// is a pure, synchronous read of coordinates already cached on the
+// `Station` (AD-5 "no redundant fetching" — no network round-trip for data
+// already in hand); `get_location_tile` is the one genuinely live piece,
+// fetching a single static OSM raster tile.
+
+/// Static, already-known location info surfaced the moment a station starts
+/// playing — never re-fetched from the network.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocationInfo {
+    pub country: Option<String>,
+    pub geo_lat: f64,
+    pub geo_long: f64,
+}
+
+/// `None` when the station has no cached coordinates — the "no
+/// coordinates" branch of the I/O matrix, which the frontend resolves to
+/// the exact same "Location unknown" placeholder as a tile-fetch failure.
+/// Country is carried through even if absent (never blocks on it) — only
+/// `geo_lat`/`geo_long` gate whether there's a location at all.
+pub fn location_info_for(station: &Station) -> Option<LocationInfo> {
+    match (station.geo_lat, station.geo_long) {
+        (Some(geo_lat), Some(geo_long)) => Some(LocationInfo {
+            country: station.country.clone(),
+            geo_lat,
+            geo_long,
+        }),
+        _ => None,
+    }
+}
+
+const OSM_TILE_BASE_URL: &str = "https://tile.openstreetmap.org";
+// AD-12's exact required string — deliberately distinct from `USER_AGENT`
+// above (Radio-Browser's own identifying header): OSM's tile usage policy
+// requires callers to identify themselves independently.
+const OSM_USER_AGENT: &str = "WinRadio/0.1 (personal desktop app)";
+// City-scale zoom, matching "centered on it" (Design Notes) — fixed, never
+// user-adjustable (no pannable/interactive map, per Never).
+const OSM_TILE_ZOOM: u32 = 10;
+
+/// Standard slippy-map XYZ tile conversion (lon/lat -> tile x/y at a fixed
+/// zoom, per the OSM wiki's reference formula), returned as a full tile URL
+/// against `tile.openstreetmap.org`. Split out as a pure function so the
+/// math is unit-testable without a live network dependency.
+pub fn tile_url(lat: f64, long: f64, zoom: u32) -> String {
+    let n = 2f64.powi(zoom as i32);
+    // Clamped defensively to the valid [0, n) tile range: real station
+    // coordinates never approach the poles/antimeridian closely enough to
+    // need this, but it keeps a future bad input from producing a
+    // nonsensical tile path instead of just a wrong (but well-formed) one.
+    let max_index = (n as i64 - 1).max(0);
+    let x = ((long + 180.0) / 360.0 * n).floor() as i64;
+    let x = x.clamp(0, max_index);
+    let lat_rad = lat.to_radians();
+    let y = ((1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI) / 2.0 * n)
+        .floor() as i64;
+    let y = y.clamp(0, max_index);
+    format!("{OSM_TILE_BASE_URL}/{zoom}/{x}/{y}.png")
+}
+
+fn build_tile_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .user_agent(OSM_USER_AGENT)
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+// `client`/`url` are separate args (rather than this function owning both
+// the client and the URL construction) purely so tests can point the
+// request at an address guaranteed to refuse the connection — same
+// "swappable base" technique as `search_stations_at` above — without
+// duplicating `tile_url`'s XYZ math for a fake host.
+async fn fetch_tile_data_url(client: &reqwest::Client, url: &str) -> Result<String, String> {
+    let response = client.get(url).send().await.map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("OSM tile fetch failed with status {}", response.status()));
+    }
+
+    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+    if bytes.is_empty() {
+        // A 2xx status with an empty body (CDN quirk, captive-portal edge
+        // case) is not a usable tile — without this check it would silently
+        // become a bogus `data:image/png;base64,` URL that the frontend
+        // treats as success and renders as a broken image with no error
+        // surfaced (code review finding).
+        return Err("OSM tile fetch returned an empty response body".to_string());
+    }
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:image/png;base64,{encoded}"))
+}
+
+/// Fetches one static OSM raster tile centered on `(lat, long)` and returns
+/// it as a base64 data URL — never a direct `<img>` hotlink from Vue (AD-12:
+/// OSM's tile usage policy requires a custom `User-Agent`, which only a
+/// Tauri-side `reqwest` call can set). Any failure (network, non-2xx
+/// status) is surfaced as `Err` for the frontend to resolve to the same
+/// "Location unknown" placeholder as the no-coordinates case — never a
+/// partial (country-only, no map) state.
+#[tauri::command]
+pub async fn get_location_tile(lat: f64, long: f64) -> Result<String, String> {
+    let client = build_tile_client()?;
+    let url = tile_url(lat, long, OSM_TILE_ZOOM);
+    fetch_tile_data_url(&client, &url).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,5 +475,115 @@ mod tests {
         // endpoint's failure as a whole-function `Err`.
         let result = get_filter_options_at("http://127.0.0.1:65535").await;
         assert_eq!(result, Ok(FilterOptions::default()));
+    }
+
+    // --- Location Tile (spec-2-2) ---------------------------------------
+
+    fn station_with_location(country: Option<&str>, geo_lat: Option<f64>, geo_long: Option<f64>) -> Station {
+        Station {
+            id: "a".to_string(),
+            name: "Station A".to_string(),
+            url: "https://a.example/stream".to_string(),
+            favicon_url: None,
+            homepage: None,
+            category: None,
+            is_favorite: false,
+            added_at: 0,
+            favorite_order: 0,
+            country: country.map(|c| c.to_string()),
+            geo_lat,
+            geo_long,
+        }
+    }
+
+    #[test]
+    fn location_info_for_returns_some_when_both_coordinates_are_present() {
+        let station = station_with_location(Some("Belgium"), Some(50.8503), Some(4.3517));
+
+        let info = location_info_for(&station).expect("coordinates present -> Some");
+
+        assert_eq!(info.country.as_deref(), Some("Belgium"));
+        assert_eq!(info.geo_lat, 50.8503);
+        assert_eq!(info.geo_long, 4.3517);
+    }
+
+    #[test]
+    fn location_info_for_returns_none_when_coordinates_are_absent() {
+        // I/O matrix: "Station has no coordinates" -> `None`, resolved by
+        // the frontend to the "Location unknown" placeholder.
+        let station = station_with_location(Some("Belgium"), None, None);
+        assert_eq!(location_info_for(&station), None);
+    }
+
+    #[test]
+    fn location_info_for_returns_none_when_only_one_coordinate_is_present() {
+        // A half-present pair (malformed/partial upstream data) must not be
+        // treated as a usable location either.
+        let station = station_with_location(None, Some(50.85), None);
+        assert_eq!(location_info_for(&station), None);
+    }
+
+    #[test]
+    fn tile_url_computes_standard_xyz_coordinates_for_the_origin() {
+        // (0, 0) at any zoom sits exactly at the center tile — the simplest
+        // possible cross-check of the formula, independent of the
+        // hemisphere-specific tan/sec math below.
+        assert_eq!(tile_url(0.0, 0.0, 10), "https://tile.openstreetmap.org/10/512/512.png");
+    }
+
+    #[test]
+    fn tile_url_computes_standard_xyz_coordinates_for_a_known_point() {
+        // Brussels, BE (~50.8503, 4.3517) at zoom 10 -> (524, 343), verified
+        // against the standard slippy-map XYZ formula independently.
+        assert_eq!(tile_url(50.8503, 4.3517, 10), "https://tile.openstreetmap.org/10/524/343.png");
+    }
+
+    #[tokio::test]
+    async fn get_location_tile_fails_when_the_tile_server_is_unreachable() {
+        // Same deterministic "refuses the connection" technique as
+        // `search_stations_returns_the_connect_error_when_the_directory_is_
+        // unreachable` above: port 65535 on loopback refuses immediately.
+        let client = build_tile_client().expect("client should build");
+        let result = fetch_tile_data_url(&client, "http://127.0.0.1:65535/10/524/343.png").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_tile_data_url_fails_when_the_response_body_is_empty() {
+        // Regression coverage for code review finding: a 2xx status alone
+        // isn't enough to call a tile fetch successful — a degenerate empty
+        // body (CDN quirk, captive-portal edge case) must still surface as
+        // an error rather than becoming a bogus
+        // `data:image/png;base64,` URL. A tiny local TCP server (std, not
+        // reqwest/tokio) stands in for a real tile host so this is
+        // deterministic and needs no live network access.
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+        let addr = listener.local_addr().expect("local addr");
+
+        std::thread::spawn(move || {
+            if let Ok((mut socket, _)) = listener.accept() {
+                // Must actually consume the client's request before writing a
+                // response — a raw test server that writes back immediately
+                // without reading first confuses hyper's client state machine
+                // (observed as `hyper::Error(UnexpectedMessage)`, not the
+                // intended empty-body case) since the request and response
+                // race on the same socket.
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf);
+                let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+            }
+        });
+
+        let client = build_tile_client().expect("client should build");
+        let url = format!("http://{addr}/10/524/343.png");
+        let result = fetch_tile_data_url(&client, &url).await;
+
+        assert_eq!(
+            result,
+            Err("OSM tile fetch returned an empty response body".to_string())
+        );
     }
 }

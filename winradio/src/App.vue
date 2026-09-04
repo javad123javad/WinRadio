@@ -160,11 +160,11 @@
 
         <TransportBar />
 
-        <!-- Info Tile grid: reserved by layout, content lands in Epic 2. -->
+        <!-- Info Tile grid: Location is wired up (spec-2-2); Weather/Stream
+             Info stay reserved-but-empty divs until Stories 2.3/2.4. -->
         <section class="grid grid-cols-2 gap-4 tiles:grid-cols-3">
-          <div v-for="tile in infoTiles" :key="tile" class="rounded-sm bg-surface-raised p-3">
-            <h3 class="text-label-caps uppercase text-on-surface-variant">{{ tile }}</h3>
-          </div>
+          <LocationTile />
+          <InfoTile v-for="tile in remainingInfoTiles" :key="tile" :title="tile" />
         </section>
       </main>
     </div>
@@ -179,6 +179,8 @@ import TransportBar from '@/components/TransportBar.vue'
 import SettingsModal from '@/components/SettingsModal.vue'
 import StationRow from '@/components/StationRow.vue'
 import SearchPanel from '@/components/SearchPanel.vue'
+import LocationTile from '@/components/LocationTile.vue'
+import InfoTile from '@/components/InfoTile.vue'
 import { useStationsStore } from '@/stores/stations'
 import { usePlaybackStore } from '@/stores/playback'
 import { useSettingsStore } from '@/stores/settings'
@@ -190,7 +192,9 @@ const settingsStore = useSettingsStore()
 const searchStore = useSearchStore()
 
 const showSettings = ref(false)
-const infoTiles = ['Location', 'Weather', 'Stream Info']
+// Location is now `<LocationTile />` (spec-2-2); these two stay reserved,
+// empty placeholder divs until Stories 2.3/2.4 fill them in.
+const remainingInfoTiles = ['Weather', 'Stream Info']
 
 // Rail content swap (Code Map) — Favorites is the default/landing view
 // (DESIGN.md nav-icon-button note: WinRadio has no separate "Home").

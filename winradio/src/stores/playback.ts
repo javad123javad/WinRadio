@@ -14,6 +14,22 @@ export interface Metadata {
 
 const emptyMetadata = (): Metadata => ({ title: '', artist: '', album: '', artworkUrl: '' })
 
+// Shared `{ok, data, reason}` envelope (AD-5) — this is `location-updated`'s
+// `data` shape.
+export interface LocationEventData {
+  country: string | null
+  geoLat: number
+  geoLong: number
+}
+
+export interface LocationState {
+  status: 'idle' | 'ok' | 'unavailable'
+  country: string | null
+  tileImage: string | null
+}
+
+const emptyLocation = (): LocationState => ({ status: 'idle', country: null, tileImage: null })
+
 // Read-model only: every field here is set from a `listen()` handler tied to
 // a Rust-pushed event, never optimistically after an `invoke()` call, per
 // spec-1-1's event model. The one exception is `volume`, which is live
@@ -40,8 +56,18 @@ export const usePlaybackStore = defineStore('playback', () => {
   // state changes made outside `set_sleep_timer`).
   const sleepTimerArmed = ref(false)
   const sleepTimerMinutes = ref<number | null>(null)
+  // Read-model for the Location Tile (spec-2-2), same conventions as
+  // `metadata` above: only ever set from `location-updated` (never
+  // optimistically), reset to idle on `play`/`stop`/`playback-error`.
+  const location = ref<LocationState>(emptyLocation())
 
   let listenersReady = false
+  // Bumped on every reset (play/stop/playback-error) and on every
+  // `location-updated` event — the in-flight `get_location_tile` fetch it
+  // started checks this before applying its result, so a station switch (or
+  // stop) mid-fetch can never let a stale tile/failure clobber a newer
+  // station's already-current location state.
+  let locationRequestSeq = 0
 
   // Only flips to `true` once every `listen()` call below has actually
   // resolved. If any of them throws (e.g. a transient IPC hiccup during
@@ -58,6 +84,12 @@ export const usePlaybackStore = defineStore('playback', () => {
         reconnecting.value = false
         errorMessage.value = null
         metadata.value = emptyMetadata()
+        // spec-2-2: reset at the same point as `metadata` — a stale
+        // previous station's location/tile must never linger. The
+        // `location-updated` event (fired right after this one on the Rust
+        // side) supplies the real state moments later.
+        location.value = emptyLocation()
+        locationRequestSeq++
         playStartedAt.value = Date.now()
 
         // Persist which station was last played (spec-1-5, AC4) so it can
@@ -77,6 +109,8 @@ export const usePlaybackStore = defineStore('playback', () => {
         // Nothing is playing any more — a stale track title left over from
         // the last station would otherwise linger in the UI.
         metadata.value = emptyMetadata()
+        location.value = emptyLocation()
+        locationRequestSeq++
         playStartedAt.value = null
       })
 
@@ -95,11 +129,44 @@ export const usePlaybackStore = defineStore('playback', () => {
         // like `reconnecting`) — a stale track title from before the
         // failure would misrepresent what's actually playing (spec-2-1).
         metadata.value = emptyMetadata()
+        location.value = emptyLocation()
+        locationRequestSeq++
       })
 
       await listen<Metadata>('metadata-updated', (event) => {
         metadata.value = event.payload
       })
+
+      // spec-2-2: fires once per play attempt, right after `play`.
+      // `ok: false` (no cached coordinates) resolves immediately to the
+      // "unavailable" placeholder, no tile fetch attempted. `ok: true` shows
+      // nothing yet (never country-without-a-map, per the frozen "never a
+      // partial state" constraint) until `get_location_tile` actually
+      // resolves; a fetch failure resolves to that exact same placeholder.
+      await listen<{ ok: boolean; data: LocationEventData | null; reason: string | null }>(
+        'location-updated',
+        (event) => {
+          const seq = ++locationRequestSeq
+          const { ok, data } = event.payload
+
+          if (!ok || !data) {
+            location.value = { status: 'unavailable', country: null, tileImage: null }
+            return
+          }
+
+          location.value = { status: 'ok', country: data.country, tileImage: null }
+          void invoke<string>('get_location_tile', { lat: data.geoLat, long: data.geoLong })
+            .then((tileImage) => {
+              if (seq !== locationRequestSeq) return // superseded by a newer play/stop
+              location.value = { status: 'ok', country: data.country, tileImage }
+            })
+            .catch((e) => {
+              if (seq !== locationRequestSeq) return
+              console.error('Get location tile failed:', e)
+              location.value = { status: 'unavailable', country: null, tileImage: null }
+            })
+        }
+      )
 
       await listen<{ minutes: number }>('sleep-timer-armed', (event) => {
         sleepTimerArmed.value = true
@@ -231,6 +298,7 @@ export const usePlaybackStore = defineStore('playback', () => {
     playStartedAt,
     sleepTimerArmed,
     sleepTimerMinutes,
+    location,
     initListeners,
     restoreLastStation,
     play,

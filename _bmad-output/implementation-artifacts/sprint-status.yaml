@@ -48,7 +48,7 @@ development_status:
 
   epic-2: in-progress
   2-1-now-playing-metadata-display: review
-  2-2-location-tile: backlog
+  2-2-location-tile: review
   2-3-weather-tile: backlog
   2-4-stream-info-tile: backlog
   epic-2-retrospective: optional

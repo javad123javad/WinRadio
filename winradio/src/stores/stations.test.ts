@@ -106,6 +106,25 @@ describe('useStationsStore', () => {
     expect(invoke).toHaveBeenCalledWith('save_stations', { stations: store.stations })
   })
 
+  it('toggleFavorite carries country/geoLat/geoLong through onto the added station (spec-2-2)', async () => {
+    const store = useStationsStore()
+    store.stations = [makeStation('a', 0)]
+
+    await store.toggleFavorite({
+      id: 'new',
+      name: 'New Station',
+      url: 'https://example.com/new',
+      country: 'Belgium',
+      geoLat: 50.8503,
+      geoLong: 4.3517,
+    })
+
+    const added = store.stations.find((s) => s.id === 'new')
+    expect(added?.country).toBe('Belgium')
+    expect(added?.geoLat).toBe(50.8503)
+    expect(added?.geoLong).toBe(4.3517)
+  })
+
   it('toggleFavorite removes an already-favorited station and persists the removal', async () => {
     const store = useStationsStore()
     store.stations = [makeStation('a', 0), makeStation('b', 1)]

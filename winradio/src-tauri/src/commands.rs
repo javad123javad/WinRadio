@@ -19,6 +19,17 @@ pub struct Station {
     pub added_at: i64,
     #[serde(default)]
     pub favorite_order: i64,
+    // spec-2-2: Location Tile reads these off the already-cached `Station`
+    // (AD-5 "no redundant fetching") — no network round-trip for data
+    // already in hand. `#[serde(default)]` so a `store.json` written before
+    // this story still loads (back-compat, same shape as `favorite_order`
+    // above).
+    #[serde(default)]
+    pub country: Option<String>,
+    #[serde(default)]
+    pub geo_lat: Option<f64>,
+    #[serde(default)]
+    pub geo_long: Option<f64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

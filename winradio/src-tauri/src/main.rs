@@ -71,6 +71,7 @@ async fn main() {
       commands::get_metadata,
       directory::search_stations,
       directory::get_filter_options,
+      directory::get_location_tile,
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

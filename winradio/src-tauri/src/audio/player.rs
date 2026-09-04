@@ -16,6 +16,7 @@ use stream_download::{Settings as DownloadSettings, StreamDownload};
 use tauri::{AppHandle, Manager};
 
 use crate::commands::Station;
+use crate::directory;
 
 /// Backoff schedule for reconnect attempts after a stream fails or drops:
 /// an immediate retry, then 2s/5s/10s delays before giving up (~20s budget
@@ -48,6 +49,24 @@ struct PlaybackErrorPayload {
     reason: String,
 }
 
+/// Shared `{ok, data, reason}` envelope (AD-5) for `location-updated` — the
+/// same shape `weather-updated`/`stream-info-updated` (Stories 2.3/2.4) will
+/// reuse. Success sets `data` and leaves `reason` null; failure is the
+/// reverse, never both/neither.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocationUpdatedPayload {
+    ok: bool,
+    data: Option<directory::LocationInfo>,
+    reason: Option<String>,
+}
+
+/// Frozen copy (Boundaries & Constraints): the exact same placeholder text
+/// covers both "no coordinates" and "tile fetch failed" — the latter is
+/// resolved on the frontend, not here, but this is the one-and-only string
+/// for the "no coordinates" branch so the two can never drift apart.
+const LOCATION_UNKNOWN: &str = "Location unknown";
+
 pub struct RadioPlayer {
     stream_handle: OutputStreamHandle,
     sink: Arc<Mutex<Option<Arc<Sink>>>>,
@@ -56,6 +75,13 @@ pub struct RadioPlayer {
     metadata: Arc<Mutex<Option<Metadata>>>,
     app_handle: Arc<Mutex<Option<AppHandle>>>,
     generation: AtomicU64,
+    // spec-2-2 code review finding: tracks which station's `location-updated`
+    // was last emitted, so a drop/reconnect cycle to the *same* station
+    // (network hiccup, not a genuine station switch) doesn't re-emit and
+    // trigger a needless fresh OSM tile fetch + tile-flicker on the
+    // frontend. A reconnect to a *different* station (different id) always
+    // still emits.
+    last_location_station_id: Mutex<Option<String>>,
 }
 
 impl RadioPlayer {
@@ -96,6 +122,7 @@ impl RadioPlayer {
             metadata: Arc::new(Mutex::new(None)),
             app_handle: Arc::new(Mutex::new(None)),
             generation: AtomicU64::new(0),
+            last_location_station_id: Mutex::new(None),
         }
     }
 
@@ -260,6 +287,40 @@ impl RadioPlayer {
                         return;
                     }
                     self.emit("play", station.clone());
+
+                    // spec-2-2: fires once per play attempt, right after
+                    // `play` — mirrors `metadata`'s reset lifecycle (idle on
+                    // play/stop/playback-error). Coordinates are read
+                    // synchronously off the already-cached `station` (AD-5
+                    // "no redundant fetching"); never a network round-trip
+                    // here, and never blocks/delays playback.
+                    //
+                    // Deduped against `last_location_station_id` (code review
+                    // finding): a drop/reconnect cycle back to the *same*
+                    // station after a network hiccup must not re-emit and
+                    // trigger a needless fresh OSM tile fetch/flicker. A
+                    // reconnect to a genuinely *different* station (different
+                    // id) always still emits.
+                    {
+                        let mut last_location_station_id = self.last_location_station_id.lock();
+                        if should_emit_location_update(&mut last_location_station_id, &station.id) {
+                            let location_data = directory::location_info_for(&station);
+                            let location_ok = location_data.is_some();
+                            self.emit(
+                                "location-updated",
+                                LocationUpdatedPayload {
+                                    ok: location_ok,
+                                    data: location_data,
+                                    reason: if location_ok {
+                                        None
+                                    } else {
+                                        Some(LOCATION_UNKNOWN.to_string())
+                                    },
+                                },
+                            );
+                        }
+                    }
+
                     let episode_started = std::time::Instant::now();
                     let _ = join_handle.await;
 
@@ -462,6 +523,29 @@ fn install_if_current<T>(
     Ok(())
 }
 
+/// Pure decision for the `location-updated` dedup (code review finding #2):
+/// given what was last emitted (`last_emitted_for`, the guarded content of
+/// `RadioPlayer::last_location_station_id`) and the station about to
+/// (re)connect, returns whether to emit `location-updated` again, updating
+/// `last_emitted_for` when it does. A drop/reconnect back to the *same*
+/// station (same id) must not re-emit — that's a network hiccup, not a
+/// genuine station switch, and re-emitting would trigger a needless fresh
+/// OSM tile fetch and flicker the Location Tile. A genuinely *different*
+/// station (different id, including the very first play of a session) must
+/// always still emit.
+///
+/// Split out as a standalone primitive, mirroring `install_if_current`
+/// above, so it's unit-testable without constructing a `RadioPlayer` itself
+/// — which requires a live audio output device (`OutputStream::try_default`)
+/// unavailable in this test harness/CI.
+fn should_emit_location_update(last_emitted_for: &mut Option<String>, station_id: &str) -> bool {
+    if last_emitted_for.as_deref() == Some(station_id) {
+        return false;
+    }
+    *last_emitted_for = Some(station_id.to_string());
+    true
+}
+
 /// Generic retry helper: tries `attempt` once; on failure, calls
 /// `on_retry(index)` and retries after each of `delays` in turn (a zero
 /// delay is not slept on). Returns the first success, or the last error once
@@ -556,6 +640,33 @@ mod tests {
 
         assert_eq!(result, Err("stale-sink"));
         assert_eq!(*slot.lock(), Some("already-playing"));
+    }
+
+    // Code review finding #2: a drop/reconnect to the *same* station must
+    // not re-emit `location-updated` (and trigger a needless OSM tile
+    // refetch/flicker), but a genuine switch to a *different* station
+    // always must.
+
+    #[test]
+    fn should_emit_location_update_emits_on_the_first_call_for_a_station() {
+        let mut last = None;
+        assert!(should_emit_location_update(&mut last, "station-a"));
+        assert_eq!(last, Some("station-a".to_string()));
+    }
+
+    #[test]
+    fn should_emit_location_update_suppresses_a_reconnect_to_the_same_station() {
+        let mut last = Some("station-a".to_string());
+        assert!(!should_emit_location_update(&mut last, "station-a"));
+        // Tracked value is unchanged, still the same station.
+        assert_eq!(last, Some("station-a".to_string()));
+    }
+
+    #[test]
+    fn should_emit_location_update_emits_when_switching_to_a_different_station() {
+        let mut last = Some("station-a".to_string());
+        assert!(should_emit_location_update(&mut last, "station-b"));
+        assert_eq!(last, Some("station-b".to_string()));
     }
 
     #[tokio::test]

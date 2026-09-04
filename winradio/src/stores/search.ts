@@ -51,6 +51,12 @@ export const toPlayableStation = (station: DirectoryStation): Station => ({
   isFavorite: false,
   addedAt: Date.now(),
   favoriteOrder: 0,
+  // spec-2-2: carried through so the Location Tile still has coordinates
+  // when a search result (never persisted with the rest of the station
+  // shape) is played or favorited.
+  country: station.country,
+  geoLat: station.geoLat,
+  geoLong: station.geoLong,
 })
 
 export const useSearchStore = defineStore('search', () => {
