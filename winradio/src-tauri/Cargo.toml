@@ -5,7 +5,11 @@ edition = "2021"
 rust-version = "1.85.0"
 
 [features]
-custom-protocol = []
+# Forwards to tauri's own `custom-protocol` feature — without this, `tauri
+# build`'s `--features custom-protocol` flag is a no-op on this crate and the
+# compiled binary still tries to load the devPath dev-server URL instead of
+# the bundled assets, even in a release build.
+custom-protocol = ["tauri/custom-protocol"]
 
 [build-dependencies]
 tauri-build = { version = "1.5", features = [] }
