@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-25-2026 12:00
-last_updated: 09-18-2026 09:00
+last_updated: 09-18-2026 09:15
 project: WinRadio
 project_key: NOKEY
 tracking_system: file-system
@@ -51,7 +51,7 @@ development_status:
   2-2-location-tile: review
   2-3-weather-tile: review
   2-4-stream-info-tile: review
-  epic-2-retrospective: optional
+  epic-2-retrospective: done
 action_items:
   - id: "epic-1-retro-item-1-consolidate-station-directorystation-fie"
     epic: 1
@@ -100,3 +100,31 @@ action_items:
     owner: "dev"
     status: open
     ref: "_bmad-output/implementation-artifacts/epic-1-retro-09-18-2026.md"
+  - id: "epic-2-retro-item-8-replace-the-three-identical-should_emit_"
+    epic: 2
+    action: "Replace the three identical should_emit_*_update functions with one shared
+      function"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-09-18-2026.md"
+  - id: "epic-2-retro-item-9-extract-weather-and-stream-info-dedup-sp"
+    epic: 2
+    action: "Extract Weather and Stream Info dedup/spawn/generation-guard/emit block
+      shape into one generic helper"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-09-18-2026.md"
+  - id: "epic-2-retro-item-10-split-player-rs-1015-lines-4-concerns-in"
+    epic: 2
+    action: "Split player.rs (1015 lines, 4 concerns) into separate modules before
+      adding another concern"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-09-18-2026.md"
+  - id: "epic-2-retro-item-11-make-deferred-work-md-triage-an-active-r"
+    epic: 2
+    action: "Make deferred-work.md triage an active recurring practice, not a one-time
+      read (reinforces Epic 1 item 6)"
+    owner: "Javad"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-09-18-2026.md"
