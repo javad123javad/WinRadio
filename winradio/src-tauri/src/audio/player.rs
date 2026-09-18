@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -51,16 +52,33 @@ struct PlaybackErrorPayload {
     reason: String,
 }
 
-/// Shared `{ok, data, reason}` envelope (AD-5) for `location-updated` — the
-/// same shape `weather-updated`/`stream-info-updated` (Stories 2.3/2.4) will
-/// reuse. Success sets `data` and leaves `reason` null; failure is the
-/// reverse, never both/neither.
+/// Shared `{ok, data, reason}` envelope (AD-5) for all three Info Tile
+/// events (`location-updated`/`weather-updated`/`stream-info-updated`).
+/// Success sets `data` and leaves `reason` null; failure is the reverse,
+/// never both/neither. Generic over the tile-specific payload type so the
+/// three events no longer need three near-identical struct definitions
+/// (cleanup: the three were previously byte-for-byte identical in shape,
+/// differing only in `data`'s type).
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct LocationUpdatedPayload {
+struct TileUpdatePayload<T: Clone + Serialize> {
     ok: bool,
-    data: Option<directory::LocationInfo>,
+    data: Option<T>,
     reason: Option<String>,
+}
+
+impl<T: Clone + Serialize> TileUpdatePayload<T> {
+    /// The `ok: false` shape, constructed at every "unavailable" call site —
+    /// cleanup: previously repeated inline (with a turbofish for the `None`
+    /// case's otherwise-unconstrained `T`) at each of the three tiles'
+    /// failure branches.
+    fn unavailable(reason: &'static str) -> Self {
+        Self {
+            ok: false,
+            data: None,
+            reason: Some(reason.to_string()),
+        }
+    }
 }
 
 /// Frozen copy (Boundaries & Constraints): the exact same placeholder text
@@ -69,35 +87,9 @@ struct LocationUpdatedPayload {
 /// for the "no coordinates" branch so the two can never drift apart.
 const LOCATION_UNKNOWN: &str = "Location unknown";
 
-/// Shared `{ok, data, reason}` envelope (AD-5) for `weather-updated` —
-/// same shape as `LocationUpdatedPayload` above, per spec-2-3. Unlike
-/// Location, the whole payload rides inside this event; there's no
-/// follow-up command/image-fetch step.
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WeatherUpdatedPayload {
-    ok: bool,
-    data: Option<weather::WeatherInfo>,
-    reason: Option<String>,
-}
-
 /// One-and-only copy of the "no coordinates"/"fetch failed" placeholder
 /// string for the weather event, mirroring `LOCATION_UNKNOWN` above.
 const WEATHER_UNAVAILABLE: &str = "Weather unavailable";
-
-/// Shared `{ok, data, reason}` envelope (AD-5) for `stream-info-updated` —
-/// same shape as Location's/Weather's, per spec-2-4. Unlike either of those,
-/// `data` is just the resolved IP string: no struct is needed for a single
-/// dynamic field. Codec/bitrate/country (the tile's other three fields)
-/// never ride this event at all — they render synchronously off the
-/// already-cached `Station` on the frontend (AC1).
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct StreamInfoUpdatedPayload {
-    ok: bool,
-    data: Option<String>,
-    reason: Option<String>,
-}
 
 /// One-and-only copy of the DNS-failure placeholder string for the stream
 /// info event, mirroring `LOCATION_UNKNOWN`/`WEATHER_UNAVAILABLE` above.
@@ -188,6 +180,41 @@ impl RadioPlayer {
 
     fn is_current_generation(&self, gen: u64) -> bool {
         self.current_generation() == gen
+    }
+
+    /// Shared shape for Weather's and Stream Info's tile-update emission:
+    /// spawn `fetch` off the playback-critical path, re-check
+    /// `is_current_generation` right before emitting so a station switch
+    /// mid-fetch can't emit a stale tile's data, then emit the `{ok, data,
+    /// reason}` envelope for either outcome. Cleanup: these two call sites
+    /// were previously near-identical `tokio::spawn` blocks copied one from
+    /// the other; Location doesn't use this helper since its coordinates are
+    /// read synchronously off the cached `Station`, with nothing to spawn.
+    fn spawn_tile_fetch_and_emit<T, F>(self: &Arc<Self>, gen: u64, event: &'static str, unavailable_reason: &'static str, fetch: F)
+    where
+        T: Clone + Serialize + Send + 'static,
+        F: Future<Output = Result<T, String>> + Send + 'static,
+    {
+        let player = self.clone();
+        tokio::spawn(async move {
+            let result = fetch.await;
+
+            if !player.is_current_generation(gen) {
+                return;
+            }
+
+            match result {
+                Ok(data) => player.emit(
+                    event,
+                    TileUpdatePayload {
+                        ok: true,
+                        data: Some(data),
+                        reason: None,
+                    },
+                ),
+                Err(_) => player.emit(event, TileUpdatePayload::<T>::unavailable(unavailable_reason)),
+            }
+        });
     }
 
     pub fn is_playing(&self) -> bool {
@@ -349,12 +376,12 @@ impl RadioPlayer {
                     // id) always still emits.
                     {
                         let mut last_location_station_id = self.last_location_station_id.lock();
-                        if should_emit_location_update(&mut last_location_station_id, &station.id) {
+                        if should_emit_tile_update(&mut last_location_station_id, &station.id) {
                             let location_data = directory::location_info_for(&station);
                             let location_ok = location_data.is_some();
                             self.emit(
                                 "location-updated",
-                                LocationUpdatedPayload {
+                                TileUpdatePayload {
                                     ok: location_ok,
                                     data: location_data,
                                     reason: if location_ok {
@@ -385,51 +412,18 @@ impl RadioPlayer {
                     // weather.
                     {
                         let mut last_weather_station_id = self.last_weather_station_id.lock();
-                        if should_emit_weather_update(&mut last_weather_station_id, &station.id) {
+                        if should_emit_tile_update(&mut last_weather_station_id, &station.id) {
                             match directory::location_info_for(&station) {
                                 Some(location) => {
-                                    let player = self.clone();
-                                    tokio::spawn(async move {
-                                        let result = match weather::build_client() {
-                                            Ok(client) => {
-                                                weather::fetch_weather(&client, location.geo_lat, location.geo_long)
-                                                    .await
-                                            }
-                                            Err(e) => Err(e),
-                                        };
-
-                                        if !player.is_current_generation(gen) {
-                                            return;
-                                        }
-
-                                        match result {
-                                            Ok(weather_data) => player.emit(
-                                                "weather-updated",
-                                                WeatherUpdatedPayload {
-                                                    ok: true,
-                                                    data: Some(weather_data),
-                                                    reason: None,
-                                                },
-                                            ),
-                                            Err(_) => player.emit(
-                                                "weather-updated",
-                                                WeatherUpdatedPayload {
-                                                    ok: false,
-                                                    data: None,
-                                                    reason: Some(WEATHER_UNAVAILABLE.to_string()),
-                                                },
-                                            ),
-                                        }
+                                    self.spawn_tile_fetch_and_emit(gen, "weather-updated", WEATHER_UNAVAILABLE, async move {
+                                        let client = weather::build_client()?;
+                                        weather::fetch_weather(&client, location.geo_lat, location.geo_long).await
                                     });
                                 }
                                 None => {
                                     self.emit(
                                         "weather-updated",
-                                        WeatherUpdatedPayload {
-                                            ok: false,
-                                            data: None,
-                                            reason: Some(WEATHER_UNAVAILABLE.to_string()),
-                                        },
+                                        TileUpdatePayload::<weather::WeatherInfo>::unavailable(WEATHER_UNAVAILABLE),
                                     );
                                 }
                             }
@@ -456,46 +450,18 @@ impl RadioPlayer {
                     // stale station's IP.
                     {
                         let mut last_stream_info_station_id = self.last_stream_info_station_id.lock();
-                        if should_emit_stream_info_update(&mut last_stream_info_station_id, &station.id) {
+                        if should_emit_tile_update(&mut last_stream_info_station_id, &station.id) {
                             match stream_info::extract_host_and_port(&station.url) {
                                 Some(_) => {
-                                    let player = self.clone();
                                     let url = station.url.clone();
-                                    tokio::spawn(async move {
-                                        let result = stream_info::resolve_ip(&url).await;
-
-                                        if !player.is_current_generation(gen) {
-                                            return;
-                                        }
-
-                                        match result {
-                                            Ok(ip) => player.emit(
-                                                "stream-info-updated",
-                                                StreamInfoUpdatedPayload {
-                                                    ok: true,
-                                                    data: Some(ip),
-                                                    reason: None,
-                                                },
-                                            ),
-                                            Err(_) => player.emit(
-                                                "stream-info-updated",
-                                                StreamInfoUpdatedPayload {
-                                                    ok: false,
-                                                    data: None,
-                                                    reason: Some(STREAM_INFO_UNAVAILABLE.to_string()),
-                                                },
-                                            ),
-                                        }
+                                    self.spawn_tile_fetch_and_emit(gen, "stream-info-updated", STREAM_INFO_UNAVAILABLE, async move {
+                                        stream_info::resolve_ip(&url).await
                                     });
                                 }
                                 None => {
                                     self.emit(
                                         "stream-info-updated",
-                                        StreamInfoUpdatedPayload {
-                                            ok: false,
-                                            data: None,
-                                            reason: Some(STREAM_INFO_UNAVAILABLE.to_string()),
-                                        },
+                                        TileUpdatePayload::<String>::unavailable(STREAM_INFO_UNAVAILABLE),
                                     );
                                 }
                             }
@@ -704,47 +670,25 @@ fn install_if_current<T>(
     Ok(())
 }
 
-/// Pure decision for the `location-updated` dedup (code review finding #2):
-/// given what was last emitted (`last_emitted_for`, the guarded content of
-/// `RadioPlayer::last_location_station_id`) and the station about to
-/// (re)connect, returns whether to emit `location-updated` again, updating
-/// `last_emitted_for` when it does. A drop/reconnect back to the *same*
-/// station (same id) must not re-emit — that's a network hiccup, not a
-/// genuine station switch, and re-emitting would trigger a needless fresh
-/// OSM tile fetch and flicker the Location Tile. A genuinely *different*
-/// station (different id, including the very first play of a session) must
-/// always still emit.
+/// Pure decision for an Info Tile event's dedup (code review finding #2,
+/// generalized — Location/Weather/Stream Info previously each had a
+/// byte-for-byte identical copy of this function under its own name).
+/// Given what was last emitted for a tile (`last_emitted_for`, the guarded
+/// content of one of `RadioPlayer`'s three `last_*_station_id` fields — each
+/// tile keeps its own field/state, deliberately never shared) and the
+/// station about to (re)connect, returns whether to emit that tile's event
+/// again, updating `last_emitted_for` when it does. A drop/reconnect back to
+/// the *same* station (same id) must not re-emit — that's a network hiccup,
+/// not a genuine station switch, and re-emitting would trigger a needless
+/// fresh fetch and flicker the tile. A genuinely *different* station
+/// (different id, including the very first play of a session) must always
+/// still emit.
 ///
 /// Split out as a standalone primitive, mirroring `install_if_current`
 /// above, so it's unit-testable without constructing a `RadioPlayer` itself
 /// — which requires a live audio output device (`OutputStream::try_default`)
 /// unavailable in this test harness/CI.
-fn should_emit_location_update(last_emitted_for: &mut Option<String>, station_id: &str) -> bool {
-    if last_emitted_for.as_deref() == Some(station_id) {
-        return false;
-    }
-    *last_emitted_for = Some(station_id.to_string());
-    true
-}
-
-/// Pure decision for the `weather-updated` dedup (spec-2-3), identical logic
-/// to `should_emit_location_update` above but operating on its own
-/// `last_emitted_for` state (`RadioPlayer::last_weather_station_id`) — the
-/// two event streams dedup independently, deliberately not sharing a field.
-fn should_emit_weather_update(last_emitted_for: &mut Option<String>, station_id: &str) -> bool {
-    if last_emitted_for.as_deref() == Some(station_id) {
-        return false;
-    }
-    *last_emitted_for = Some(station_id.to_string());
-    true
-}
-
-/// Pure decision for the `stream-info-updated` dedup (spec-2-4), identical
-/// logic to `should_emit_location_update`/`should_emit_weather_update` above
-/// but operating on its own `last_emitted_for` state
-/// (`RadioPlayer::last_stream_info_station_id`) — all three event streams
-/// dedup independently, deliberately not sharing a field.
-fn should_emit_stream_info_update(last_emitted_for: &mut Option<String>, station_id: &str) -> bool {
+fn should_emit_tile_update(last_emitted_for: &mut Option<String>, station_id: &str) -> bool {
     if last_emitted_for.as_deref() == Some(station_id) {
         return false;
     }
@@ -848,78 +792,32 @@ mod tests {
         assert_eq!(*slot.lock(), Some("already-playing"));
     }
 
-    // Code review finding #2: a drop/reconnect to the *same* station must
-    // not re-emit `location-updated` (and trigger a needless OSM tile
-    // refetch/flicker), but a genuine switch to a *different* station
-    // always must.
+    // Code review finding #2, generalized: a drop/reconnect to the *same*
+    // station must not re-emit a tile's event (and trigger a needless
+    // refetch/flicker), but a genuine switch to a *different* station always
+    // must. One shared function/test set now covers all three tiles
+    // (Location/Weather/Stream Info), which previously each carried a
+    // byte-for-byte identical copy of both the function and these tests.
 
     #[test]
-    fn should_emit_location_update_emits_on_the_first_call_for_a_station() {
+    fn should_emit_tile_update_emits_on_the_first_call_for_a_station() {
         let mut last = None;
-        assert!(should_emit_location_update(&mut last, "station-a"));
+        assert!(should_emit_tile_update(&mut last, "station-a"));
         assert_eq!(last, Some("station-a".to_string()));
     }
 
     #[test]
-    fn should_emit_location_update_suppresses_a_reconnect_to_the_same_station() {
+    fn should_emit_tile_update_suppresses_a_reconnect_to_the_same_station() {
         let mut last = Some("station-a".to_string());
-        assert!(!should_emit_location_update(&mut last, "station-a"));
+        assert!(!should_emit_tile_update(&mut last, "station-a"));
         // Tracked value is unchanged, still the same station.
         assert_eq!(last, Some("station-a".to_string()));
     }
 
     #[test]
-    fn should_emit_location_update_emits_when_switching_to_a_different_station() {
+    fn should_emit_tile_update_emits_when_switching_to_a_different_station() {
         let mut last = Some("station-a".to_string());
-        assert!(should_emit_location_update(&mut last, "station-b"));
-        assert_eq!(last, Some("station-b".to_string()));
-    }
-
-    // spec-2-3: same dedup contract as Location, but for its own independent
-    // `should_emit_weather_update` field/fn.
-
-    #[test]
-    fn should_emit_weather_update_emits_on_the_first_call_for_a_station() {
-        let mut last = None;
-        assert!(should_emit_weather_update(&mut last, "station-a"));
-        assert_eq!(last, Some("station-a".to_string()));
-    }
-
-    #[test]
-    fn should_emit_weather_update_suppresses_a_reconnect_to_the_same_station() {
-        let mut last = Some("station-a".to_string());
-        assert!(!should_emit_weather_update(&mut last, "station-a"));
-        assert_eq!(last, Some("station-a".to_string()));
-    }
-
-    #[test]
-    fn should_emit_weather_update_emits_when_switching_to_a_different_station() {
-        let mut last = Some("station-a".to_string());
-        assert!(should_emit_weather_update(&mut last, "station-b"));
-        assert_eq!(last, Some("station-b".to_string()));
-    }
-
-    // spec-2-4: same dedup contract as Location/Weather, but for its own
-    // independent `should_emit_stream_info_update` field/fn.
-
-    #[test]
-    fn should_emit_stream_info_update_emits_on_the_first_call_for_a_station() {
-        let mut last = None;
-        assert!(should_emit_stream_info_update(&mut last, "station-a"));
-        assert_eq!(last, Some("station-a".to_string()));
-    }
-
-    #[test]
-    fn should_emit_stream_info_update_suppresses_a_reconnect_to_the_same_station() {
-        let mut last = Some("station-a".to_string());
-        assert!(!should_emit_stream_info_update(&mut last, "station-a"));
-        assert_eq!(last, Some("station-a".to_string()));
-    }
-
-    #[test]
-    fn should_emit_stream_info_update_emits_when_switching_to_a_different_station() {
-        let mut last = Some("station-a".to_string());
-        assert!(should_emit_stream_info_update(&mut last, "station-b"));
+        assert!(should_emit_tile_update(&mut last, "station-b"));
         assert_eq!(last, Some("station-b".to_string()));
     }
 
