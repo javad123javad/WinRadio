@@ -12,5 +12,8 @@
 Thumbs.db
 .DS_Store
 
-# BMad render cache
-/_bmad/render/
+# BMad Method tooling (generic, reusable skill/config framework — not
+# WinRadio-specific). _bmad-output/ (specs, retros, deferred-work.md) is
+# kept: that's the project's own decision history, not the tooling itself.
+/_bmad/
+/.claude/skills/
