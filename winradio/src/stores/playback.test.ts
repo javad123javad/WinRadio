@@ -264,6 +264,48 @@ describe('usePlaybackStore', () => {
       expect(playback.location.status).toBe('idle')
     })
 
+    // Deferred-work fix: a reconnect to the *same* station must not reset
+    // the tile to idle. The backend's own dedup (`should_emit_location_update`)
+    // correctly suppresses re-emitting `location-updated` on such a
+    // reconnect, so an unconditional reset here would leave the tile
+    // permanently blank until the user switched stations.
+    it('a reconnect to the same station does not reset location to idle', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+      vi.mocked(invoke).mockResolvedValue('data:image/png;base64,abc')
+
+      const station = makeStation('a')
+      handlers['play']({ payload: station })
+      handlers['location-updated']({
+        payload: { ok: true, data: { country: 'Belgium', geoLat: 50.85, geoLong: 4.35 }, reason: null },
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+
+      // Simulate a drop/reconnect to the same station.
+      handlers['play']({ payload: station })
+
+      expect(playback.location.status).toBe('ok')
+      expect(playback.location.country).toBe('Belgium')
+    })
+
+    it('switching to a genuinely different station still resets location to idle', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      handlers['play']({ payload: makeStation('a') })
+      handlers['location-updated']({
+        payload: { ok: true, data: { country: 'Belgium', geoLat: 50.85, geoLong: 4.35 }, reason: null },
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+
+      handlers['play']({ payload: makeStation('b') })
+
+      expect(playback.location.status).toBe('idle')
+      expect(playback.location.country).toBeNull()
+    })
+
     it('a superseded tile fetch (station switched mid-fetch) never clobbers the newer station\'s location', async () => {
       const playback = usePlaybackStore()
       await playback.initListeners()
@@ -340,6 +382,38 @@ describe('usePlaybackStore', () => {
       expect(playback.weather.temperatureC).toBeNull()
     })
 
+    // Deferred-work fix: same-station-reconnect dedup, mirroring Location's.
+    it('a reconnect to the same station does not reset weather to idle', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      const station = makeStation('a')
+      handlers['play']({ payload: station })
+      handlers['weather-updated']({
+        payload: { ok: true, data: { temperatureC: 18, condition: 'Overcast', forecastHighC: 21, forecastLowC: 12 }, reason: null },
+      })
+
+      handlers['play']({ payload: station })
+
+      expect(playback.weather.status).toBe('ok')
+      expect(playback.weather.temperatureC).toBe(18)
+    })
+
+    it('switching to a genuinely different station still resets weather to idle', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      handlers['play']({ payload: makeStation('a') })
+      handlers['weather-updated']({
+        payload: { ok: true, data: { temperatureC: 18, condition: 'Overcast', forecastHighC: 21, forecastLowC: 12 }, reason: null },
+      })
+
+      handlers['play']({ payload: makeStation('b') })
+
+      expect(playback.weather.status).toBe('idle')
+      expect(playback.weather.temperatureC).toBeNull()
+    })
+
     it('stop resets weather to idle', async () => {
       const playback = usePlaybackStore()
       await playback.initListeners()
@@ -398,6 +472,39 @@ describe('usePlaybackStore', () => {
         payload: { ok: true, data: '31.12.64.60', reason: null },
       })
       handlers['play']({ payload: makeStation('a') })
+
+      expect(playback.streamInfo.status).toBe('idle')
+      expect(playback.streamInfo.ip).toBeNull()
+    })
+
+    // Deferred-work fix: same-station-reconnect dedup, mirroring Location's/
+    // Weather's.
+    it('a reconnect to the same station does not reset streamInfo to idle', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      const station = makeStation('a')
+      handlers['play']({ payload: station })
+      handlers['stream-info-updated']({
+        payload: { ok: true, data: '31.12.64.60', reason: null },
+      })
+
+      handlers['play']({ payload: station })
+
+      expect(playback.streamInfo.status).toBe('ok')
+      expect(playback.streamInfo.ip).toBe('31.12.64.60')
+    })
+
+    it('switching to a genuinely different station still resets streamInfo to idle', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      handlers['play']({ payload: makeStation('a') })
+      handlers['stream-info-updated']({
+        payload: { ok: true, data: '31.12.64.60', reason: null },
+      })
+
+      handlers['play']({ payload: makeStation('b') })
 
       expect(playback.streamInfo.status).toBe('idle')
       expect(playback.streamInfo.ip).toBeNull()

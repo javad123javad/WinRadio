@@ -127,19 +127,35 @@ export const usePlaybackStore = defineStore('playback', () => {
     if (listenersReady) return
     try {
       await listen<Station>('play', (event) => {
+        // Deferred-work fix: the Rust retry loop fires `play` on every
+        // reconnect, including an automatic reconnect after a stream drop to
+        // the *same* station — not just a genuine station switch. Resetting
+        // the Info Tiles unconditionally here used to combine with each
+        // tile's own per-station dedup guard (`should_emit_*_update` in
+        // player.rs, which correctly suppresses re-emitting the
+        // `*-updated` event for a same-station reconnect) to leave the tile
+        // permanently blank: reset to idle, then nothing ever repopulates it
+        // until the user switches stations. Only reset a tile's state on a
+        // genuine switch to a *different* station id; a same-station
+        // reconnect leaves the previous (still-accurate) tile state in
+        // place.
+        const isSameStation = currentStation.value?.id === event.payload.id
+
         currentStation.value = event.payload
         isPlaying.value = true
         reconnecting.value = false
         errorMessage.value = null
         metadata.value = emptyMetadata()
-        // spec-2-2: reset at the same point as `metadata` — a stale
-        // previous station's location/tile must never linger. The
-        // `location-updated` event (fired right after this one on the Rust
-        // side) supplies the real state moments later.
-        location.value = emptyLocation()
-        locationRequestSeq++
-        weather.value = emptyWeather()
-        streamInfo.value = emptyStreamInfo()
+        if (!isSameStation) {
+          // spec-2-2: reset at the same point as `metadata` — a stale
+          // previous station's location/tile must never linger. The
+          // `location-updated` event (fired right after this one on the Rust
+          // side) supplies the real state moments later.
+          location.value = emptyLocation()
+          locationRequestSeq++
+          weather.value = emptyWeather()
+          streamInfo.value = emptyStreamInfo()
+        }
         playStartedAt.value = Date.now()
 
         // Persist which station was last played (spec-1-5, AC4) so it can
