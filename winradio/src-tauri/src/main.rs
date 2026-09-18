@@ -9,6 +9,7 @@ mod directory;
 mod store;
 mod tray;
 mod timer;
+mod weather;
 
 use std::sync::Arc;
 use tauri::{Manager, WindowEvent, GlobalShortcutManager};

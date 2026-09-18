@@ -297,6 +297,74 @@ describe('usePlaybackStore', () => {
     })
   })
 
+  describe('weather (spec-2-3)', () => {
+    it('ok:true populates temperature/condition/high/low directly from the event, no follow-up invoke', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      handlers['weather-updated']({
+        payload: { ok: true, data: { temperatureC: 18, condition: 'Overcast', forecastHighC: 21, forecastLowC: 12 }, reason: null },
+      })
+
+      expect(playback.weather.status).toBe('ok')
+      expect(playback.weather.temperatureC).toBe(18)
+      expect(playback.weather.condition).toBe('Overcast')
+      expect(playback.weather.forecastHighC).toBe(21)
+      expect(playback.weather.forecastLowC).toBe(12)
+      expect(invoke).not.toHaveBeenCalledWith('get_weather_tile', expect.anything())
+    })
+
+    it('ok:false (no coordinates or fetch failure) resolves to unavailable', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      handlers['weather-updated']({
+        payload: { ok: false, data: null, reason: 'Weather unavailable' },
+      })
+
+      expect(playback.weather.status).toBe('unavailable')
+      expect(playback.weather.temperatureC).toBeNull()
+      expect(playback.weather.condition).toBeNull()
+    })
+
+    it('play resets weather to idle, so a new station never shows the previous one\'s stale weather', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      handlers['weather-updated']({
+        payload: { ok: true, data: { temperatureC: 18, condition: 'Overcast', forecastHighC: 21, forecastLowC: 12 }, reason: null },
+      })
+      handlers['play']({ payload: makeStation('a') })
+
+      expect(playback.weather.status).toBe('idle')
+      expect(playback.weather.temperatureC).toBeNull()
+    })
+
+    it('stop resets weather to idle', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      handlers['weather-updated']({
+        payload: { ok: true, data: { temperatureC: 18, condition: 'Overcast', forecastHighC: 21, forecastLowC: 12 }, reason: null },
+      })
+      handlers['stop']({ payload: undefined })
+
+      expect(playback.weather.status).toBe('idle')
+    })
+
+    it('playback-error resets weather to idle', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      handlers['weather-updated']({
+        payload: { ok: true, data: { temperatureC: 18, condition: 'Overcast', forecastHighC: 21, forecastLowC: 12 }, reason: null },
+      })
+      handlers['playback-error']({ payload: { reason: "Couldn't play this station" } })
+
+      expect(playback.weather.status).toBe('idle')
+    })
+  })
+
   describe('sleep timer', () => {
     it('arms the timer via set_sleep_timer, but only reflects it once the armed event round-trips', async () => {
       const playback = usePlaybackStore()

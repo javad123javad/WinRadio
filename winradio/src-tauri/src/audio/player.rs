@@ -17,6 +17,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::commands::Station;
 use crate::directory;
+use crate::weather;
 
 /// Backoff schedule for reconnect attempts after a stream fails or drops:
 /// an immediate retry, then 2s/5s/10s delays before giving up (~20s budget
@@ -67,6 +68,22 @@ struct LocationUpdatedPayload {
 /// for the "no coordinates" branch so the two can never drift apart.
 const LOCATION_UNKNOWN: &str = "Location unknown";
 
+/// Shared `{ok, data, reason}` envelope (AD-5) for `weather-updated` —
+/// same shape as `LocationUpdatedPayload` above, per spec-2-3. Unlike
+/// Location, the whole payload rides inside this event; there's no
+/// follow-up command/image-fetch step.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WeatherUpdatedPayload {
+    ok: bool,
+    data: Option<weather::WeatherInfo>,
+    reason: Option<String>,
+}
+
+/// One-and-only copy of the "no coordinates"/"fetch failed" placeholder
+/// string for the weather event, mirroring `LOCATION_UNKNOWN` above.
+const WEATHER_UNAVAILABLE: &str = "Weather unavailable";
+
 pub struct RadioPlayer {
     stream_handle: OutputStreamHandle,
     sink: Arc<Mutex<Option<Arc<Sink>>>>,
@@ -82,6 +99,11 @@ pub struct RadioPlayer {
     // frontend. A reconnect to a *different* station (different id) always
     // still emits.
     last_location_station_id: Mutex<Option<String>>,
+    // spec-2-3: parallel dedup tracking for `weather-updated`, independent
+    // of Location's — the two event streams must never share a field, or a
+    // reconnect that legitimately re-emits one would spuriously suppress
+    // the other.
+    last_weather_station_id: Mutex<Option<String>>,
 }
 
 impl RadioPlayer {
@@ -123,6 +145,7 @@ impl RadioPlayer {
             app_handle: Arc::new(Mutex::new(None)),
             generation: AtomicU64::new(0),
             last_location_station_id: Mutex::new(None),
+            last_weather_station_id: Mutex::new(None),
         }
     }
 
@@ -318,6 +341,75 @@ impl RadioPlayer {
                                     },
                                 },
                             );
+                        }
+                    }
+
+                    // spec-2-3: fires once per play attempt, right after
+                    // Location. Deduped against `last_weather_station_id`
+                    // (parallel to, but independent of, Location's dedup) —
+                    // same drop/reconnect-to-same-station suppression, same
+                    // always-emit-on-genuine-switch behavior.
+                    //
+                    // The live Open-Meteo call happens off the
+                    // playback-critical path (NFR-3): a no-coordinates
+                    // station emits immediately (no network call), but a
+                    // coordinates-having station's fetch is `tokio::spawn`'d
+                    // rather than `.await`'d inline, so a slow/unreachable
+                    // weather API never delays reaching the retry loop's
+                    // post-play logic below. The spawned task re-checks
+                    // `is_current_generation` right before emitting, so a
+                    // station switch mid-fetch can't emit a stale tile's
+                    // weather.
+                    {
+                        let mut last_weather_station_id = self.last_weather_station_id.lock();
+                        if should_emit_weather_update(&mut last_weather_station_id, &station.id) {
+                            match directory::location_info_for(&station) {
+                                Some(location) => {
+                                    let player = self.clone();
+                                    tokio::spawn(async move {
+                                        let result = match weather::build_client() {
+                                            Ok(client) => {
+                                                weather::fetch_weather(&client, location.geo_lat, location.geo_long)
+                                                    .await
+                                            }
+                                            Err(e) => Err(e),
+                                        };
+
+                                        if !player.is_current_generation(gen) {
+                                            return;
+                                        }
+
+                                        match result {
+                                            Ok(weather_data) => player.emit(
+                                                "weather-updated",
+                                                WeatherUpdatedPayload {
+                                                    ok: true,
+                                                    data: Some(weather_data),
+                                                    reason: None,
+                                                },
+                                            ),
+                                            Err(_) => player.emit(
+                                                "weather-updated",
+                                                WeatherUpdatedPayload {
+                                                    ok: false,
+                                                    data: None,
+                                                    reason: Some(WEATHER_UNAVAILABLE.to_string()),
+                                                },
+                                            ),
+                                        }
+                                    });
+                                }
+                                None => {
+                                    self.emit(
+                                        "weather-updated",
+                                        WeatherUpdatedPayload {
+                                            ok: false,
+                                            data: None,
+                                            reason: Some(WEATHER_UNAVAILABLE.to_string()),
+                                        },
+                                    );
+                                }
+                            }
                         }
                     }
 
@@ -546,6 +638,18 @@ fn should_emit_location_update(last_emitted_for: &mut Option<String>, station_id
     true
 }
 
+/// Pure decision for the `weather-updated` dedup (spec-2-3), identical logic
+/// to `should_emit_location_update` above but operating on its own
+/// `last_emitted_for` state (`RadioPlayer::last_weather_station_id`) — the
+/// two event streams dedup independently, deliberately not sharing a field.
+fn should_emit_weather_update(last_emitted_for: &mut Option<String>, station_id: &str) -> bool {
+    if last_emitted_for.as_deref() == Some(station_id) {
+        return false;
+    }
+    *last_emitted_for = Some(station_id.to_string());
+    true
+}
+
 /// Generic retry helper: tries `attempt` once; on failure, calls
 /// `on_retry(index)` and retries after each of `delays` in turn (a zero
 /// delay is not slept on). Returns the first success, or the last error once
@@ -666,6 +770,30 @@ mod tests {
     fn should_emit_location_update_emits_when_switching_to_a_different_station() {
         let mut last = Some("station-a".to_string());
         assert!(should_emit_location_update(&mut last, "station-b"));
+        assert_eq!(last, Some("station-b".to_string()));
+    }
+
+    // spec-2-3: same dedup contract as Location, but for its own independent
+    // `should_emit_weather_update` field/fn.
+
+    #[test]
+    fn should_emit_weather_update_emits_on_the_first_call_for_a_station() {
+        let mut last = None;
+        assert!(should_emit_weather_update(&mut last, "station-a"));
+        assert_eq!(last, Some("station-a".to_string()));
+    }
+
+    #[test]
+    fn should_emit_weather_update_suppresses_a_reconnect_to_the_same_station() {
+        let mut last = Some("station-a".to_string());
+        assert!(!should_emit_weather_update(&mut last, "station-a"));
+        assert_eq!(last, Some("station-a".to_string()));
+    }
+
+    #[test]
+    fn should_emit_weather_update_emits_when_switching_to_a_different_station() {
+        let mut last = Some("station-a".to_string());
+        assert!(should_emit_weather_update(&mut last, "station-b"));
         assert_eq!(last, Some("station-b".to_string()));
     }
 

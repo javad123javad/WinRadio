@@ -261,3 +261,23 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-2-location-tile.md`
   summary: The fetched OSM raster tile has no dark-theme treatment (no CSS filter, no themed placeholder) — OSM's standard tile style is light/white-background, which will read as a jarring bright rectangle against WinRadio's deliberately dark, flat "Metro" surface design.
   evidence: Code review flagged the visual mismatch; confirmed neither DESIGN.md nor the architecture doc addresses tile theming anywhere, and no alternative (dark-styled) tile source is sanctioned by AD-12. An open design question, not a coding gap — needs a human aesthetic call (a CSS filter hack vs. accepting the mismatch vs. a different tile provider) rather than a guessed fix.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-3-weather-tile.md`
+  summary: No component-level test for `WeatherTile.vue` verifying the placeholder actually replaces the numeric content when status is `idle`/`unavailable`.
+  evidence: Review of the diff found only store-level (`playback.test.ts`) coverage; `LocationTile.vue` has the identical gap, already accepted in Story 2.2.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-3-weather-tile.md`
+  summary: No test exercises `fetch_weather`'s real HTTP success path (URL/query-string construction against a live-shaped response) — only the pure `parse_weather` and the "unreachable" failure path are tested.
+  evidence: Review of `winradio/src-tauri/src/weather.rs`'s test module found no mocked-server success test; `directory.rs`'s `fetch_stations`/`fetch_names` have the same established gap in this codebase.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-3-weather-tile.md`
+  summary: No integration test exercises `should_emit_weather_update` + `directory::location_info_for`'s `None` branch (a station with no coordinates) through `run_playback` itself, nor the `tokio::spawn`'d fetch's `is_current_generation` guard suppressing a stale emission from a superseded station (I/O matrix's "Rapid station switch mid-fetch" row).
+  evidence: Verification-gap review confirmed no test drives two successive `play()` calls while an earlier station's weather fetch is still in flight; building one requires a test seam for captured `emit()` calls (no fake `AppHandle` harness exists in this codebase) — a real but non-trivial testability investment. I independently read `player.rs:344-414` and confirmed the guard's logic is correct by inspection and matches the spec's required design; the gap is coverage, not a known defect.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-3-weather-tile.md`
+  summary: `Math.round()` on a temperature just below zero can display as "-0°C" in `WeatherTile.vue`.
+  evidence: Cosmetic display edge case noted in review; `Math.round(-0.4)` returns `-0` in JS, which template-interpolates as the string "-0".
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-3-weather-tile.md`
+  summary: No request-cancellation/backoff for the Open-Meteo call when a user switches stations rapidly and repeatedly — each switch spawns a new HTTP request (suppressed only by the dedup-on-same-station check, not by rate-limiting distinct switches).
+  evidence: Mirrors the analogous "no request cancellation on rapid switching" item already deferred for Location in Story 2.2; same shape, now also true for Weather's backend-spawned fetch.

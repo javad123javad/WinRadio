@@ -30,6 +30,32 @@ export interface LocationState {
 
 const emptyLocation = (): LocationState => ({ status: 'idle', country: null, tileImage: null })
 
+// Shared `{ok, data, reason}` envelope (AD-5) — this is `weather-updated`'s
+// `data` shape. Unlike Location, the whole payload rides inside the event
+// itself — no follow-up `invoke()` fetch.
+export interface WeatherEventData {
+  temperatureC: number
+  condition: string
+  forecastHighC: number
+  forecastLowC: number
+}
+
+export interface WeatherState {
+  status: 'idle' | 'ok' | 'unavailable'
+  temperatureC: number | null
+  condition: string | null
+  forecastHighC: number | null
+  forecastLowC: number | null
+}
+
+const emptyWeather = (): WeatherState => ({
+  status: 'idle',
+  temperatureC: null,
+  condition: null,
+  forecastHighC: null,
+  forecastLowC: null,
+})
+
 // Read-model only: every field here is set from a `listen()` handler tied to
 // a Rust-pushed event, never optimistically after an `invoke()` call, per
 // spec-1-1's event model. The one exception is `volume`, which is live
@@ -60,6 +86,10 @@ export const usePlaybackStore = defineStore('playback', () => {
   // `metadata` above: only ever set from `location-updated` (never
   // optimistically), reset to idle on `play`/`stop`/`playback-error`.
   const location = ref<LocationState>(emptyLocation())
+  // Read-model for the Weather Tile (spec-2-3), same conventions as
+  // `location` above: only ever set from `weather-updated` (never
+  // optimistically), reset to idle on `play`/`stop`/`playback-error`.
+  const weather = ref<WeatherState>(emptyWeather())
 
   let listenersReady = false
   // Bumped on every reset (play/stop/playback-error) and on every
@@ -90,6 +120,7 @@ export const usePlaybackStore = defineStore('playback', () => {
         // side) supplies the real state moments later.
         location.value = emptyLocation()
         locationRequestSeq++
+        weather.value = emptyWeather()
         playStartedAt.value = Date.now()
 
         // Persist which station was last played (spec-1-5, AC4) so it can
@@ -111,6 +142,7 @@ export const usePlaybackStore = defineStore('playback', () => {
         metadata.value = emptyMetadata()
         location.value = emptyLocation()
         locationRequestSeq++
+        weather.value = emptyWeather()
         playStartedAt.value = null
       })
 
@@ -131,6 +163,7 @@ export const usePlaybackStore = defineStore('playback', () => {
         metadata.value = emptyMetadata()
         location.value = emptyLocation()
         locationRequestSeq++
+        weather.value = emptyWeather()
       })
 
       await listen<Metadata>('metadata-updated', (event) => {
@@ -165,6 +198,29 @@ export const usePlaybackStore = defineStore('playback', () => {
               console.error('Get location tile failed:', e)
               location.value = { status: 'unavailable', country: null, tileImage: null }
             })
+        }
+      )
+
+      // spec-2-3: fires once per play attempt, right after `location-updated`.
+      // Unlike Location, the whole payload rides inside the event itself —
+      // no follow-up `invoke()` fetch/superseded-fetch bookkeeping needed.
+      await listen<{ ok: boolean; data: WeatherEventData | null; reason: string | null }>(
+        'weather-updated',
+        (event) => {
+          const { ok, data } = event.payload
+
+          if (!ok || !data) {
+            weather.value = { status: 'unavailable', temperatureC: null, condition: null, forecastHighC: null, forecastLowC: null }
+            return
+          }
+
+          weather.value = {
+            status: 'ok',
+            temperatureC: data.temperatureC,
+            condition: data.condition,
+            forecastHighC: data.forecastHighC,
+            forecastLowC: data.forecastLowC,
+          }
         }
       )
 
@@ -299,6 +355,7 @@ export const usePlaybackStore = defineStore('playback', () => {
     sleepTimerArmed,
     sleepTimerMinutes,
     location,
+    weather,
     initListeners,
     restoreLastStation,
     play,
