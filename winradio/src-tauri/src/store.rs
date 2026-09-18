@@ -270,6 +270,8 @@ mod tests {
             country: None,
             geo_lat: None,
             geo_long: None,
+            codec: None,
+            bitrate: None,
         };
         let mut settings = Settings::default();
         settings.last_station = Some(station);
@@ -351,5 +353,28 @@ mod tests {
         assert_eq!(data.stations[0].country, None);
         assert_eq!(data.stations[0].geo_lat, None);
         assert_eq!(data.stations[0].geo_long, None);
+    }
+
+    #[test]
+    fn missing_stream_info_fields_default_instead_of_failing_the_whole_station() {
+        // Simulates a store.json written before `codec`/`bitrate` existed
+        // (spec-2-4) — `#[serde(default)]` must let it parse instead of
+        // dropping the station (or the whole collection) entirely. Same
+        // back-compat shape as `missing_location_fields_default_instead_of_
+        // failing_the_whole_station` above.
+        let content = r#"{
+            "stations": [
+                {"id": "a", "name": "Station A", "url": "https://a.example/stream",
+                 "faviconUrl": null, "homepage": null, "category": null,
+                 "isFavorite": true, "addedAt": 123}
+            ],
+            "settings": {}
+        }"#;
+
+        let data = Store::parse_store_data(content);
+
+        assert_eq!(data.stations.len(), 1);
+        assert_eq!(data.stations[0].codec, None);
+        assert_eq!(data.stations[0].bitrate, None);
     }
 }

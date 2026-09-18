@@ -493,6 +493,8 @@ mod tests {
             country: country.map(|c| c.to_string()),
             geo_lat,
             geo_long,
+            codec: None,
+            bitrate: None,
         }
     }
 

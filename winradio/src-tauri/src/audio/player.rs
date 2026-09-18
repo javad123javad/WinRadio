@@ -17,6 +17,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::commands::Station;
 use crate::directory;
+use crate::stream_info;
 use crate::weather;
 
 /// Backoff schedule for reconnect attempts after a stream fails or drops:
@@ -84,6 +85,24 @@ struct WeatherUpdatedPayload {
 /// string for the weather event, mirroring `LOCATION_UNKNOWN` above.
 const WEATHER_UNAVAILABLE: &str = "Weather unavailable";
 
+/// Shared `{ok, data, reason}` envelope (AD-5) for `stream-info-updated` —
+/// same shape as Location's/Weather's, per spec-2-4. Unlike either of those,
+/// `data` is just the resolved IP string: no struct is needed for a single
+/// dynamic field. Codec/bitrate/country (the tile's other three fields)
+/// never ride this event at all — they render synchronously off the
+/// already-cached `Station` on the frontend (AC1).
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StreamInfoUpdatedPayload {
+    ok: bool,
+    data: Option<String>,
+    reason: Option<String>,
+}
+
+/// One-and-only copy of the DNS-failure placeholder string for the stream
+/// info event, mirroring `LOCATION_UNKNOWN`/`WEATHER_UNAVAILABLE` above.
+const STREAM_INFO_UNAVAILABLE: &str = "unavailable";
+
 pub struct RadioPlayer {
     stream_handle: OutputStreamHandle,
     sink: Arc<Mutex<Option<Arc<Sink>>>>,
@@ -104,6 +123,9 @@ pub struct RadioPlayer {
     // reconnect that legitimately re-emits one would spuriously suppress
     // the other.
     last_weather_station_id: Mutex<Option<String>>,
+    // spec-2-4: parallel dedup tracking for `stream-info-updated`,
+    // independent of Location's and Weather's, same contract.
+    last_stream_info_station_id: Mutex<Option<String>>,
 }
 
 impl RadioPlayer {
@@ -146,6 +168,7 @@ impl RadioPlayer {
             generation: AtomicU64::new(0),
             last_location_station_id: Mutex::new(None),
             last_weather_station_id: Mutex::new(None),
+            last_stream_info_station_id: Mutex::new(None),
         }
     }
 
@@ -413,6 +436,72 @@ impl RadioPlayer {
                         }
                     }
 
+                    // spec-2-4: fires once per play attempt, right after
+                    // Weather. Deduped against `last_stream_info_station_id`
+                    // (parallel to, but independent of, Location's and
+                    // Weather's dedup) — same drop/reconnect-to-same-station
+                    // suppression, same always-emit-on-genuine-switch
+                    // behavior.
+                    //
+                    // Codec/bitrate/country never ride this event — they're
+                    // read synchronously off the already-cached `station` on
+                    // the frontend (AC1), no round-trip needed. The IP is the
+                    // tile's only genuinely fetched field: the host/port
+                    // parse happens synchronously (a malformed URL/no host
+                    // emits `ok:false` immediately, no spawn needed), but the
+                    // actual DNS lookup is `tokio::spawn`'d off the
+                    // playback-critical path exactly like Weather's fetch,
+                    // re-checking `is_current_generation` right before
+                    // emitting so a station switch mid-lookup can't emit a
+                    // stale station's IP.
+                    {
+                        let mut last_stream_info_station_id = self.last_stream_info_station_id.lock();
+                        if should_emit_stream_info_update(&mut last_stream_info_station_id, &station.id) {
+                            match stream_info::extract_host_and_port(&station.url) {
+                                Some(_) => {
+                                    let player = self.clone();
+                                    let url = station.url.clone();
+                                    tokio::spawn(async move {
+                                        let result = stream_info::resolve_ip(&url).await;
+
+                                        if !player.is_current_generation(gen) {
+                                            return;
+                                        }
+
+                                        match result {
+                                            Ok(ip) => player.emit(
+                                                "stream-info-updated",
+                                                StreamInfoUpdatedPayload {
+                                                    ok: true,
+                                                    data: Some(ip),
+                                                    reason: None,
+                                                },
+                                            ),
+                                            Err(_) => player.emit(
+                                                "stream-info-updated",
+                                                StreamInfoUpdatedPayload {
+                                                    ok: false,
+                                                    data: None,
+                                                    reason: Some(STREAM_INFO_UNAVAILABLE.to_string()),
+                                                },
+                                            ),
+                                        }
+                                    });
+                                }
+                                None => {
+                                    self.emit(
+                                        "stream-info-updated",
+                                        StreamInfoUpdatedPayload {
+                                            ok: false,
+                                            data: None,
+                                            reason: Some(STREAM_INFO_UNAVAILABLE.to_string()),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
+
                     let episode_started = std::time::Instant::now();
                     let _ = join_handle.await;
 
@@ -650,6 +739,19 @@ fn should_emit_weather_update(last_emitted_for: &mut Option<String>, station_id:
     true
 }
 
+/// Pure decision for the `stream-info-updated` dedup (spec-2-4), identical
+/// logic to `should_emit_location_update`/`should_emit_weather_update` above
+/// but operating on its own `last_emitted_for` state
+/// (`RadioPlayer::last_stream_info_station_id`) — all three event streams
+/// dedup independently, deliberately not sharing a field.
+fn should_emit_stream_info_update(last_emitted_for: &mut Option<String>, station_id: &str) -> bool {
+    if last_emitted_for.as_deref() == Some(station_id) {
+        return false;
+    }
+    *last_emitted_for = Some(station_id.to_string());
+    true
+}
+
 /// Generic retry helper: tries `attempt` once; on failure, calls
 /// `on_retry(index)` and retries after each of `delays` in turn (a zero
 /// delay is not slept on). Returns the first success, or the last error once
@@ -794,6 +896,30 @@ mod tests {
     fn should_emit_weather_update_emits_when_switching_to_a_different_station() {
         let mut last = Some("station-a".to_string());
         assert!(should_emit_weather_update(&mut last, "station-b"));
+        assert_eq!(last, Some("station-b".to_string()));
+    }
+
+    // spec-2-4: same dedup contract as Location/Weather, but for its own
+    // independent `should_emit_stream_info_update` field/fn.
+
+    #[test]
+    fn should_emit_stream_info_update_emits_on_the_first_call_for_a_station() {
+        let mut last = None;
+        assert!(should_emit_stream_info_update(&mut last, "station-a"));
+        assert_eq!(last, Some("station-a".to_string()));
+    }
+
+    #[test]
+    fn should_emit_stream_info_update_suppresses_a_reconnect_to_the_same_station() {
+        let mut last = Some("station-a".to_string());
+        assert!(!should_emit_stream_info_update(&mut last, "station-a"));
+        assert_eq!(last, Some("station-a".to_string()));
+    }
+
+    #[test]
+    fn should_emit_stream_info_update_emits_when_switching_to_a_different_station() {
+        let mut last = Some("station-a".to_string());
+        assert!(should_emit_stream_info_update(&mut last, "station-b"));
         assert_eq!(last, Some("station-b".to_string()));
     }
 

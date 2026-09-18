@@ -56,6 +56,17 @@ const emptyWeather = (): WeatherState => ({
   forecastLowC: null,
 })
 
+// `stream-info-updated`'s `data` shape (spec-2-4) — unlike Location/Weather,
+// this is just the resolved IP string, not a multi-field object; codec/
+// bitrate/country never ride this event at all (they're read synchronously
+// off `currentStation` instead).
+export interface StreamInfoState {
+  status: 'idle' | 'ok' | 'unavailable'
+  ip: string | null
+}
+
+const emptyStreamInfo = (): StreamInfoState => ({ status: 'idle', ip: null })
+
 // Read-model only: every field here is set from a `listen()` handler tied to
 // a Rust-pushed event, never optimistically after an `invoke()` call, per
 // spec-1-1's event model. The one exception is `volume`, which is live
@@ -90,6 +101,13 @@ export const usePlaybackStore = defineStore('playback', () => {
   // `location` above: only ever set from `weather-updated` (never
   // optimistically), reset to idle on `play`/`stop`/`playback-error`.
   const weather = ref<WeatherState>(emptyWeather())
+  // Read-model for the Stream Info Tile's IP field (spec-2-4), same
+  // conventions as `location`/`weather` above: only ever set from
+  // `stream-info-updated` (never optimistically), reset to idle on
+  // `play`/`stop`/`playback-error`. Codec/bitrate/country render straight
+  // off `currentStation` in the component instead — no store state needed
+  // for those.
+  const streamInfo = ref<StreamInfoState>(emptyStreamInfo())
 
   let listenersReady = false
   // Bumped on every reset (play/stop/playback-error) and on every
@@ -121,6 +139,7 @@ export const usePlaybackStore = defineStore('playback', () => {
         location.value = emptyLocation()
         locationRequestSeq++
         weather.value = emptyWeather()
+        streamInfo.value = emptyStreamInfo()
         playStartedAt.value = Date.now()
 
         // Persist which station was last played (spec-1-5, AC4) so it can
@@ -143,6 +162,7 @@ export const usePlaybackStore = defineStore('playback', () => {
         location.value = emptyLocation()
         locationRequestSeq++
         weather.value = emptyWeather()
+        streamInfo.value = emptyStreamInfo()
         playStartedAt.value = null
       })
 
@@ -164,6 +184,7 @@ export const usePlaybackStore = defineStore('playback', () => {
         location.value = emptyLocation()
         locationRequestSeq++
         weather.value = emptyWeather()
+        streamInfo.value = emptyStreamInfo()
       })
 
       await listen<Metadata>('metadata-updated', (event) => {
@@ -221,6 +242,18 @@ export const usePlaybackStore = defineStore('playback', () => {
             forecastHighC: data.forecastHighC,
             forecastLowC: data.forecastLowC,
           }
+        }
+      )
+
+      // spec-2-4: fires once per play attempt, right after
+      // `weather-updated`. Unlike Location/Weather, `data` is just the
+      // resolved IP string — set directly, no follow-up `invoke()` fetch and
+      // no multi-field mapping needed.
+      await listen<{ ok: boolean; data: string | null; reason: string | null }>(
+        'stream-info-updated',
+        (event) => {
+          const { ok, data } = event.payload
+          streamInfo.value = ok ? { status: 'ok', ip: data } : { status: 'unavailable', ip: null }
         }
       )
 
@@ -356,6 +389,7 @@ export const usePlaybackStore = defineStore('playback', () => {
     sleepTimerMinutes,
     location,
     weather,
+    streamInfo,
     initListeners,
     restoreLastStation,
     play,

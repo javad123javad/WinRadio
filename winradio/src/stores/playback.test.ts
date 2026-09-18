@@ -365,6 +365,69 @@ describe('usePlaybackStore', () => {
     })
   })
 
+  describe('stream info (spec-2-4)', () => {
+    it('ok:true populates the resolved ip directly from the event, no follow-up invoke', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      handlers['stream-info-updated']({
+        payload: { ok: true, data: '31.12.64.60', reason: null },
+      })
+
+      expect(playback.streamInfo.status).toBe('ok')
+      expect(playback.streamInfo.ip).toBe('31.12.64.60')
+    })
+
+    it('ok:false (DNS failure) resolves to unavailable, with a null ip', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      handlers['stream-info-updated']({
+        payload: { ok: false, data: null, reason: 'unavailable' },
+      })
+
+      expect(playback.streamInfo.status).toBe('unavailable')
+      expect(playback.streamInfo.ip).toBeNull()
+    })
+
+    it('play resets streamInfo to idle, so a new station never shows the previous one\'s stale ip', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      handlers['stream-info-updated']({
+        payload: { ok: true, data: '31.12.64.60', reason: null },
+      })
+      handlers['play']({ payload: makeStation('a') })
+
+      expect(playback.streamInfo.status).toBe('idle')
+      expect(playback.streamInfo.ip).toBeNull()
+    })
+
+    it('stop resets streamInfo to idle', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      handlers['stream-info-updated']({
+        payload: { ok: true, data: '31.12.64.60', reason: null },
+      })
+      handlers['stop']({ payload: undefined })
+
+      expect(playback.streamInfo.status).toBe('idle')
+    })
+
+    it('playback-error resets streamInfo to idle', async () => {
+      const playback = usePlaybackStore()
+      await playback.initListeners()
+
+      handlers['stream-info-updated']({
+        payload: { ok: true, data: '31.12.64.60', reason: null },
+      })
+      handlers['playback-error']({ payload: { reason: "Couldn't play this station" } })
+
+      expect(playback.streamInfo.status).toBe('idle')
+    })
+  })
+
   describe('sleep timer', () => {
     it('arms the timer via set_sleep_timer, but only reflects it once the armed event round-trips', async () => {
       const playback = usePlaybackStore()

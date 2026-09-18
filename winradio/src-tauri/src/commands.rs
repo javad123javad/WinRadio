@@ -30,6 +30,14 @@ pub struct Station {
     pub geo_lat: Option<f64>,
     #[serde(default)]
     pub geo_long: Option<f64>,
+    // spec-2-4: Stream Info Tile reads these off the already-cached `Station`
+    // (AD-5 "no redundant fetching") synchronously, same shape as
+    // `country`/`geo_lat`/`geo_long` above — `#[serde(default)]` for
+    // back-compat with a `store.json` written before this story.
+    #[serde(default)]
+    pub codec: Option<String>,
+    #[serde(default)]
+    pub bitrate: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

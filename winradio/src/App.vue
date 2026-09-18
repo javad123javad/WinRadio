@@ -160,13 +160,13 @@
 
         <TransportBar />
 
-        <!-- Info Tile grid: Location (spec-2-2) and Weather (spec-2-3) are
-             wired up; Stream Info stays a reserved-but-empty div until
-             Story 2.4. -->
+        <!-- Info Tile grid: Location (spec-2-2), Weather (spec-2-3), and
+             Stream Info (spec-2-4) are all wired up — the fixed set of
+             three (SM-C1) is complete. -->
         <section class="grid grid-cols-2 gap-4 tiles:grid-cols-3">
           <LocationTile />
           <WeatherTile />
-          <InfoTile v-for="tile in remainingInfoTiles" :key="tile" :title="tile" />
+          <StreamInfoTile />
         </section>
       </main>
     </div>
@@ -183,7 +183,7 @@ import StationRow from '@/components/StationRow.vue'
 import SearchPanel from '@/components/SearchPanel.vue'
 import LocationTile from '@/components/LocationTile.vue'
 import WeatherTile from '@/components/WeatherTile.vue'
-import InfoTile from '@/components/InfoTile.vue'
+import StreamInfoTile from '@/components/StreamInfoTile.vue'
 import { useStationsStore } from '@/stores/stations'
 import { usePlaybackStore } from '@/stores/playback'
 import { useSettingsStore } from '@/stores/settings'
@@ -195,10 +195,6 @@ const settingsStore = useSettingsStore()
 const searchStore = useSearchStore()
 
 const showSettings = ref(false)
-// Location (spec-2-2) and Weather (spec-2-3) are now `<LocationTile />` /
-// `<WeatherTile />`; Stream Info stays a reserved, empty placeholder div
-// until Story 2.4 fills it in.
-const remainingInfoTiles = ['Stream Info']
 
 // Rail content swap (Code Map) — Favorites is the default/landing view
 // (DESIGN.md nav-icon-button note: WinRadio has no separate "Home").

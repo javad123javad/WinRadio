@@ -281,3 +281,19 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-3-weather-tile.md`
   summary: No request-cancellation/backoff for the Open-Meteo call when a user switches stations rapidly and repeatedly — each switch spawns a new HTTP request (suppressed only by the dedup-on-same-station check, not by rate-limiting distinct switches).
   evidence: Mirrors the analogous "no request cancellation on rapid switching" item already deferred for Location in Story 2.2; same shape, now also true for Weather's backend-spawned fetch.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-4-stream-info-tile.md`
+  summary: A stream drop/reconnect to the *same* station leaves ALL THREE Info Tiles (Location, Weather, Stream Info) permanently blank for the rest of that station's playback, with no way to recover short of switching stations.
+  evidence: Confirmed by reading `winradio/src-tauri/src/audio/player.rs:335` — `self.emit("play", station.clone())` fires on every iteration of `run_playback`'s retry loop, including an automatic reconnect after a stream drop, not just a genuine station switch. The frontend's `play` listener (`playback.ts`) unconditionally resets `location`/`weather`/`streamInfo` to idle on every `play` event. Each tile's own dedup (`should_emit_location_update`/`should_emit_weather_update`/`should_emit_stream_info_update`) correctly suppresses re-emitting its event on a same-station reconnect (by design, to avoid a needless refetch/flicker) — but nothing then repopulates the frontend state, since the suppressed re-emit was the only path back to `ok`. This predates Story 2.4 (the same mechanism already existed for Location in Story 2.2 and Weather in Story 2.3) — Story 2.4 only inherited the pattern for its own dedup, and this story's review (edge-case-hunter, verification-gap) is what surfaced it. Needs a coordinated fix across all three tiles together, e.g. don't reset tile state on a same-station `play`, or have the backend re-emit the last-known envelope when dedup suppresses a fetch rather than emitting nothing.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-4-stream-info-tile.md`
+  summary: `stream_info::resolve_ip`'s blocking DNS lookup (`std::net::ToSocketAddrs` inside `spawn_blocking`) has no timeout — a hung or misconfigured resolver leaves that task (and its blocking-pool thread) running indefinitely, unlike `weather::fetch_weather`'s reqwest client which has explicit connect/request timeouts.
+  evidence: Review of `winradio/src-tauri/src/stream_info.rs` found no timeout wrapping the `to_socket_addrs()` call, in contrast to `weather.rs`'s `build_client()` which sets `.connect_timeout(...)`/`.timeout(...)`.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-4-stream-info-tile.md`
+  summary: A station reporting `bitrate: 0` renders as a blank dash in `StreamInfoTile.vue` instead of "0kbps", since the codec/bitrate line treats a falsy `bitrate` as missing.
+  evidence: `winradio/src/components/StreamInfoTile.vue`'s `codecBitrateLine` uses `station?.bitrate ? ... : undefined` (truthy check) rather than a null/undefined check. Low real-world impact (0 kbps doesn't occur for a working station) but a real logical gap.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-4-stream-info-tile.md`
+  summary: No component-level test for `StreamInfoTile.vue` verifying AC1's core behavior — that codec/bitrate/country render synchronously with correct per-field blank fallbacks when one is missing.
+  evidence: The diff's test additions (`playback.test.ts`) cover only the `streamInfo` IP/status read-model; nothing exercises the component's direct `currentStation` reads. Mirrors the same already-accepted gap for `LocationTile.vue`/`WeatherTile.vue` in Stories 2.2/2.3.

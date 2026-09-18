@@ -125,6 +125,23 @@ describe('useStationsStore', () => {
     expect(added?.geoLong).toBe(4.3517)
   })
 
+  it('toggleFavorite carries codec/bitrate through onto the added station (spec-2-4)', async () => {
+    const store = useStationsStore()
+    store.stations = [makeStation('a', 0)]
+
+    await store.toggleFavorite({
+      id: 'new',
+      name: 'New Station',
+      url: 'https://example.com/new',
+      codec: 'MP3',
+      bitrate: 128,
+    })
+
+    const added = store.stations.find((s) => s.id === 'new')
+    expect(added?.codec).toBe('MP3')
+    expect(added?.bitrate).toBe(128)
+  })
+
   it('toggleFavorite removes an already-favorited station and persists the removal', async () => {
     const store = useStationsStore()
     store.stations = [makeStation('a', 0), makeStation('b', 1)]

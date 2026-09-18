@@ -57,6 +57,11 @@ export const toPlayableStation = (station: DirectoryStation): Station => ({
   country: station.country,
   geoLat: station.geoLat,
   geoLong: station.geoLong,
+  // spec-2-4: carried through so the Stream Info Tile still has codec/
+  // bitrate when a search result (never persisted with the rest of the
+  // station shape) is played or favorited.
+  codec: station.codec,
+  bitrate: station.bitrate,
 })
 
 export const useSearchStore = defineStore('search', () => {

@@ -7,6 +7,7 @@ mod audio;
 mod commands;
 mod directory;
 mod store;
+mod stream_info;
 mod tray;
 mod timer;
 mod weather;

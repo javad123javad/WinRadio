@@ -18,6 +18,10 @@ export interface Station {
   country?: string
   geoLat?: number
   geoLong?: number
+  // spec-2-4: read synchronously off this cached record by the Stream Info
+  // Tile (AD-5 "no redundant fetching") — never re-fetched.
+  codec?: string
+  bitrate?: number
 }
 
 // A station-shaped object from elsewhere (e.g. a search result) that hasn't
@@ -148,6 +152,8 @@ export const useStationsStore = defineStore('stations', () => {
         country: candidate.country,
         geoLat: candidate.geoLat,
         geoLong: candidate.geoLong,
+        codec: candidate.codec,
+        bitrate: candidate.bitrate,
       }
       stations.value = [...stations.value, station]
     }
