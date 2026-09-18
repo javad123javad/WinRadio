@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-25-2026 12:00
-last_updated: 09-18-2026
+last_updated: 09-18-2026 09:00
 project: WinRadio
 project_key: NOKEY
 tracking_system: file-system
@@ -44,7 +44,7 @@ development_status:
   1-6-system-tray-presence: review
   1-7-sleep-timer: review
   1-8-settings-tray-behavior-sleep-timer-default-theme: review
-  epic-1-retrospective: optional
+  epic-1-retrospective: done
 
   epic-2: in-progress
   2-1-now-playing-metadata-display: review
@@ -52,3 +52,51 @@ development_status:
   2-3-weather-tile: review
   2-4-stream-info-tile: review
   epic-2-retrospective: optional
+action_items:
+  - id: "epic-1-retro-item-1-consolidate-station-directorystation-fie"
+    epic: 1
+    action: "Consolidate Station/DirectoryStation field-parity points into one shared
+      mapping function or add a coverage test"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-09-18-2026.md"
+  - id: "epic-1-retro-item-2-add-reconciliation-or-an-explicit-accept"
+    epic: 1
+    action: "Add reconciliation (or an explicit accepted-risk decision) for lastStation
+      snapshot staleness vs live Favorites edits, with a test"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-09-18-2026.md"
+  - id: "epic-1-retro-item-3-add-vue-test-utils-a-dom-test-environmen"
+    epic: 1
+    action: "Add @vue/test-utils + a DOM test environment (jsdom/happy-dom)"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-09-18-2026.md"
+  - id: "epic-1-retro-item-4-run-one-accessibility-focused-pass-triag"
+    epic: 1
+    action: "Run one accessibility-focused pass triaging the 9+ scattered accessibility
+      deferred items"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-09-18-2026.md"
+  - id: "epic-1-retro-item-5-adopt-a-shared-hardened-save-helper-debo"
+    epic: 1
+    action: "Adopt a shared hardened save helper (debounced, atomic temp-file+rename)
+      instead of per-field patches"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-09-18-2026.md"
+  - id: "epic-1-retro-item-6-establish-a-periodic-triage-pass-over-de"
+    epic: 1
+    action: "Establish a periodic triage pass over deferred-work.md"
+    owner: "Javad"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-09-18-2026.md"
+  - id: "epic-1-retro-item-7-verification-should-include-an-actual-ta"
+    epic: 1
+    action: "Verification should include an actual tauri build + installed-release
+      smoke test going forward (already remediated in commit cb25712)"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-09-18-2026.md"
