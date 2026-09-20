@@ -79,7 +79,10 @@ impl From<RawStation> for DirectoryStation {
         // Radio-Browser signals "unknown" with an empty string, not a JSON
         // null — normalize that into `None` so the frontend can use plain
         // truthiness checks instead of also special-casing `""`.
-        let non_empty = |s: String| if s.trim().is_empty() { None } else { Some(s) };
+        let non_empty = |s: String| {
+            let trimmed = s.trim();
+            if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+        };
         DirectoryStation {
             id: raw.stationuuid,
             name: raw.name,
@@ -128,10 +131,16 @@ fn build_client() -> Result<reqwest::Client, String> {
 fn parse_stations(body: &str) -> Result<Vec<DirectoryStation>, String> {
     let entries: Vec<serde_json::Value> =
         serde_json::from_str(body).map_err(|_| CONNECT_ERROR.to_string())?;
+    let mut seen = std::collections::HashSet::new();
     Ok(entries
         .into_iter()
         .filter_map(|entry| serde_json::from_value::<RawStation>(entry).ok())
         .map(DirectoryStation::from)
+        // Dedupe by id (mirrors parse_names's seen-set pass below): a
+        // community-maintained directory occasionally lists the same
+        // stationuuid twice, and a duplicate would otherwise reach the
+        // frontend as a repeated Vue `:key` (code review finding).
+        .filter(|station| seen.insert(station.id.clone()))
         .collect())
 }
 

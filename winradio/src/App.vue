@@ -130,7 +130,7 @@
             Searching…
           </p>
           <p v-else-if="searchStore.status === 'zero-match'" class="text-caption text-on-surface-variant">
-            No stations found for '{{ searchStore.lastQuery }}'.
+            {{ searchStore.lastQuery ? `No stations found for '${searchStore.lastQuery}'.` : 'No stations match your filters.' }}
           </p>
           <p v-else-if="searchStore.status === 'offline'" class="text-caption text-on-surface-variant">
             {{ searchStore.errorMessage }}

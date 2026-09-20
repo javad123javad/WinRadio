@@ -303,3 +303,21 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-1-reliable-single-station-playback-foundation-rescue.md`
   summary: `stationsStore.loadStations()`'s catch branch (invoked `list_stations` failure) sets `stations.value = DEFAULT_STATIONS` in memory but never persists it, unlike the success-with-empty-result path which does call `saveStations()`.
   evidence: `winradio/src/stores/stations.ts:101-113` — the `catch` block at line 108-110 is missing the `await saveStations()` call present in the `if (saved.length === 0)` branch above it. Narrow blast radius: Story 1.1's own `Store::parse_store_data` fix (Rust side) already falls back per-field on malformed data rather than throwing, so this frontend catch path is mostly a defense against IPC-level failures, which are rare.
+
+## Deferred from: closeout code review of story-1-2-search-browse-stations (2026-09-20)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-2-search-browse-stations.md`
+  summary: `showFilterControls` (`App.vue`) is only ever toggled by the Filter nav icon, and never reset when the user switches away from Search (to Favorites) or back to Search directly via its own nav icon — the filter select panel's expanded/collapsed state can persist across an unrelated view switch.
+  evidence: `winradio/src/App.vue`'s Favorites-nav (`@click="activeView = 'favorites'"`) and Search-nav (`@click="activeView = 'search'"`) handlers don't touch `showFilterControls`; only `onFilterClick` does. Low-severity UX inconsistency, not a functional bug — the correct behavior (reset vs. persist) is a product call, not an unambiguous fix.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-2-search-browse-stations.md`
+  summary: Old search results stay visible with no loading indicator while a new search is in flight — `App.vue`'s `v-if="searchStore.results.length > 0"` branch takes precedence over the `status === 'loading'` branch, so a re-search over existing results shows no "Searching…" feedback until the new response replaces the list.
+  evidence: `winradio/src/App.vue`'s search-rail template — the `results.length > 0` list renders unconditionally ahead of the loading message in the `v-else-if` chain. Only surfaces when a search already has results and the user refines the query/filters; first search and zero-match cases are unaffected.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-2-search-browse-stations.md`
+  summary: `search_stations` (Tauri command) has no server-side minimum-query-length guard and treats a `429 Too Many Requests` from Radio-Browser identically to a connect failure — every keystroke-pause search (however short) hits the public API, with no distinct rate-limit handling or backoff if it's ever hit.
+  evidence: `winradio/src-tauri/src/directory.rs`'s `search_stations_at`/`fetch_stations` send any non-empty trimmed `name` regardless of length, and `fetch_stations` maps any non-2xx status (including 429) to the same `CONNECT_ERROR`. Low real-world impact for a single-user desktop app's search volume against a public, community-run API, but worth hardening if usage patterns change.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-2-search-browse-stations.md`
+  summary: `search_stations` (Tauri command) is reachable with all four filter args `None`/empty via direct IPC invocation (not just through `SearchPanel.vue`'s UI, which always calls it with `hasAnyCriteria()` already true) — such a call would return up to 100 unfiltered stations rather than an empty/idle result.
+  evidence: `winradio/src-tauri/src/directory.rs:192-219`'s `search_stations_at` has no early return when `params` only contains the two always-present `hidebroken`/`limit` entries. Not reachable through any current UI call site — defense-in-depth only.
