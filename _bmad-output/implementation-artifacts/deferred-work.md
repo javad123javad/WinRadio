@@ -293,3 +293,13 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-4-stream-info-tile.md`
   summary: No component-level test for `StreamInfoTile.vue` verifying AC1's core behavior — that codec/bitrate/country render synchronously with correct per-field blank fallbacks when one is missing.
   evidence: The diff's test additions (`playback.test.ts`) cover only the `streamInfo` IP/status read-model; nothing exercises the component's direct `currentStation` reads. Mirrors the same already-accepted gap for `LocationTile.vue`/`WeatherTile.vue` in Stories 2.2/2.3.
+
+## Deferred from: code review of story-1-1-reliable-single-station-playback-foundation-rescue (2026-09-20)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-1-reliable-single-station-playback-foundation-rescue.md`
+  summary: The transport bar's volume slider sends one `set_volume` Tauri IPC call per `input` event during a drag (`onVolumeInput` in `TransportBar.vue` calling `playback.setVolume()`), unthrottled — a native range input can fire dozens of `input` events per drag gesture.
+  evidence: `winradio/src/components/TransportBar.vue:125-129` calls `playback.setVolume(val)` directly on `@input`; `winradio/src/stores/playback.ts:325-333`'s `setVolume` invokes `set_volume` on every call. Disk persistence is correctly deferred to `@change` (`onVolumeCommit`/`persistVolume`) — only the live IPC push per tick is unthrottled. Low real-world impact (local IPC, not network), but worth debouncing/throttling if this pattern is reused for anything more expensive.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-1-reliable-single-station-playback-foundation-rescue.md`
+  summary: `stationsStore.loadStations()`'s catch branch (invoked `list_stations` failure) sets `stations.value = DEFAULT_STATIONS` in memory but never persists it, unlike the success-with-empty-result path which does call `saveStations()`.
+  evidence: `winradio/src/stores/stations.ts:101-113` — the `catch` block at line 108-110 is missing the `await saveStations()` call present in the `if (saved.length === 0)` branch above it. Narrow blast radius: Story 1.1's own `Store::parse_store_data` fix (Rust side) already falls back per-field on malformed data rather than throwing, so this frontend catch path is mostly a defense against IPC-level failures, which are rare.

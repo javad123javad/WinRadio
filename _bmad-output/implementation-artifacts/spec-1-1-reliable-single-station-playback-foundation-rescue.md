@@ -74,6 +74,13 @@ Out of scope for this story (correctly deferred to Story 1.5): persisting the la
 - Given a `Station`/`Settings` struct crossing the Tauri boundary, when it serializes, then fields are camelCase with no manual mapping
 - Given the base shell layout, when the window is resized below the minimum width, then the (reserved, empty) Info Tile grid area would collapse 3-across to 2-across and the Station List rail never collapses
 
+### Review Findings
+
+- [x] [Review][Patch] Give-up path leaves `is_playing()` stuck `true`, breaking `toggle_play_pause()`'s retry decision [winradio/src-tauri/src/audio/player.rs:478-490] — fixed: clear `self.sink` before returning in the give-up branch
+- [x] [Review][Patch] Space-bar shortcut toggles playback behind the open Settings modal [winradio/src/App.vue:226] — fixed: guard now also checks `showSettings.value`
+- [x] [Review][Defer] Volume slider sends one `set_volume` IPC call per drag tick, unthrottled [winradio/src/components/TransportBar.vue:125, winradio/src/stores/playback.ts:325] — deferred, pre-existing, low impact (local IPC only)
+- [x] [Review][Defer] `loadStations()`'s catch branch no longer persists the in-memory `DEFAULT_STATIONS` fallback to disk on a `list_stations` failure [winradio/src/stores/stations.ts:108-110] — deferred, narrow blast radius (backend's own store parsing already falls back independently per-field)
+
 ## Spec Change Log
 
 - **2026-08-27, Tasks & Acceptance Verification audit (step-03):** Found the frozen "Always" invariants and I/O matrix included "on relaunch, last-played station shows idle with last volume restored" — an epic-wide requirement copied in from `epic-1-context.md` during planning, but not one of Story 1.1's own four ACs in epics.md (that behavior is Story 1.5's AC). The implementer had correctly left it unbuilt, flagging the gap. Human confirmed (asked via checkpoint): remove it from Story 1.1's scope rather than implement it here. Amended: dropped the relaunch/idle-restore sentence from the "Always" bullet and removed its I/O matrix row. KEEP: everything else in Boundaries & Constraints and the remaining four matrix rows are unchanged and were satisfied as implemented.
