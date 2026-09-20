@@ -478,6 +478,14 @@ impl RadioPlayer {
                     if episode_started.elapsed() < SHORT_EPISODE_THRESHOLD {
                         consecutive_short_episodes += 1;
                         if consecutive_short_episodes >= MAX_CONSECUTIVE_SHORT_EPISODES {
+                            // The sink already ended on its own (that's how we
+                            // got here), but it's still sitting in `self.sink`
+                            // — clear it so `is_playing()` reports `false`
+                            // after this terminal give-up. Otherwise
+                            // `toggle_play_pause()` sees a stale "playing"
+                            // state and calls `stop()` (a no-op) instead of
+                            // `play()` to retry.
+                            self.sink.lock().take();
                             self.emit(
                                 "playback-error",
                                 PlaybackErrorPayload {

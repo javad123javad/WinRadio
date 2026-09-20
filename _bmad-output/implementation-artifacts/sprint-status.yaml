@@ -29,14 +29,14 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-25-2026 12:00
-last_updated: 09-18-2026 09:15
+last_updated: 09-20-2026 00:00
 project: WinRadio
 project_key: NOKEY
 tracking_system: file-system
 story_location: _bmad-output/implementation-artifacts
 development_status:
   epic-1: in-progress
-  1-1-reliable-single-station-playback-foundation-rescue: review
+  1-1-reliable-single-station-playback-foundation-rescue: done
   1-2-search-browse-stations: review
   1-3-preview-play-from-search-results: review
   1-4-favorites-add-remove-reorder: review
@@ -105,15 +105,17 @@ action_items:
     action: "Replace the three identical should_emit_*_update functions with one shared
       function"
     owner: "dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-2-retro-09-18-2026.md"
+    resolved_by: "commit 9f09239"
   - id: "epic-2-retro-item-9-extract-weather-and-stream-info-dedup-sp"
     epic: 2
     action: "Extract Weather and Stream Info dedup/spawn/generation-guard/emit block
       shape into one generic helper"
     owner: "dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-2-retro-09-18-2026.md"
+    resolved_by: "commit 9f09239"
   - id: "epic-2-retro-item-10-split-player-rs-1015-lines-4-concerns-in"
     epic: 2
     action: "Split player.rs (1015 lines, 4 concerns) into separate modules before

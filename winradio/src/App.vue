@@ -223,7 +223,7 @@ const isTextInputFocused = () => {
 }
 
 const onGlobalKeydown = (event: KeyboardEvent) => {
-  if (event.code !== 'Space' || isTextInputFocused()) return
+  if (event.code !== 'Space' || isTextInputFocused() || showSettings.value) return
   event.preventDefault()
   if (playbackStore.isPlaying) {
     playbackStore.stop()
