@@ -64,6 +64,19 @@ export const normalizeFavoriteOrder = (list: Station[]): Station[] => {
   return list.map((s, index) => ({ ...s, favoriteOrder: index }))
 }
 
+// epic-1-retro item 2 (accepted-risk decision + reconciliation): `settingsStore.lastStation`
+// is a frozen snapshot taken at play-time. If that station is still in the
+// live Favorites list, prefer the live copy (picks up a rename/reorder/edit
+// since it was last played) over the stale snapshot. If it's been
+// unfavorited or was never favorited (e.g. a search result), there's no
+// live copy to reconcile against — the frozen snapshot is shown as-is; this
+// residual staleness (an unfavorited station's last-known name/art) is an
+// accepted risk, not fixed here.
+export const reconcileLastStation = (favorites: Station[], lastStation: Station | null): Station | null => {
+  if (!lastStation) return lastStation
+  return favorites.find((s) => s.id === lastStation.id) ?? lastStation
+}
+
 export const swapFavoriteOrder = (list: Station[], id: string, direction: 'up' | 'down'): Station[] => {
   // Backfill first so a migrated (all-tied) list gets genuinely distinct
   // values to swap between, not just its own value swapped with itself.
@@ -139,21 +152,15 @@ export const useStationsStore = defineStore('stations', () => {
     if (isFavorite(candidate.id)) {
       stations.value = stations.value.filter((s) => s.id !== candidate.id)
     } else {
+      // Spread (not a hand-enumerated field list) so any future field added
+      // to Station/FavoritableStation carries through automatically instead
+      // of silently being dropped here — the root cause behind Story 2.2's
+      // shipped bug (country/geoLat/geoLong were once forgotten this way).
       const station: Station = {
-        id: candidate.id,
-        name: candidate.name,
-        url: candidate.url,
-        faviconUrl: candidate.faviconUrl,
-        homepage: candidate.homepage,
-        category: candidate.category,
+        ...candidate,
         isFavorite: true,
         addedAt: candidate.addedAt ?? Date.now(),
         favoriteOrder: nextFavoriteOrder(stations.value),
-        country: candidate.country,
-        geoLat: candidate.geoLat,
-        geoLong: candidate.geoLong,
-        codec: candidate.codec,
-        bitrate: candidate.bitrate,
       }
       stations.value = [...stations.value, station]
     }

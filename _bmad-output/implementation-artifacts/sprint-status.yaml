@@ -58,21 +58,28 @@ action_items:
     action: "Consolidate Station/DirectoryStation field-parity points into one shared
       mapping function or add a coverage test"
     owner: "dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-1-retro-09-18-2026.md"
+    resolved_by: "stations.ts toggleFavorite now spreads candidate instead of hand-listing
+      fields; search.ts's toPlayableStation got a structural coverage test"
   - id: "epic-1-retro-item-2-add-reconciliation-or-an-explicit-accept"
     epic: 1
     action: "Add reconciliation (or an explicit accepted-risk decision) for lastStation
       snapshot staleness vs live Favorites edits, with a test"
     owner: "dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-1-retro-09-18-2026.md"
+    resolved_by: "reconcileLastStation in stations.ts prefers the live Favorites copy when
+      still favorited; residual staleness for unfavorited stations is an accepted risk
+      (documented in code), covered by 3 new tests"
   - id: "epic-1-retro-item-3-add-vue-test-utils-a-dom-test-environmen"
     epic: 1
     action: "Add @vue/test-utils + a DOM test environment (jsdom/happy-dom)"
     owner: "dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-1-retro-09-18-2026.md"
+    resolved_by: "@vue/test-utils + jsdom installed, wired into vite.config.ts's test.environment,
+      first component test added (InfoTile.test.ts)"
   - id: "epic-1-retro-item-4-run-one-accessibility-focused-pass-triag"
     epic: 1
     action: "Run one accessibility-focused pass triaging the 9+ scattered accessibility
@@ -98,8 +105,10 @@ action_items:
     action: "Verification should include an actual tauri build + installed-release
       smoke test going forward (already remediated in commit cb25712)"
     owner: "dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-1-retro-09-18-2026.md"
+    resolved_by: "commit cb25712; reinforced by the v0.2.2 release build (tauri build, not
+      just cargo build/tauri dev)"
   - id: "epic-2-retro-item-8-replace-the-three-identical-should_emit_"
     epic: 2
     action: "Replace the three identical should_emit_*_update functions with one shared

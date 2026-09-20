@@ -18,4 +18,10 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
   },
+  test: {
+    // epic-1-retro item 3: a DOM environment so component-level tests
+    // (@vue/test-utils) can mount and interact with real Vue components,
+    // not just pure functions/store logic.
+    environment: 'jsdom',
+  },
 })

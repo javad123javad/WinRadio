@@ -184,7 +184,7 @@ import SearchPanel from '@/components/SearchPanel.vue'
 import LocationTile from '@/components/LocationTile.vue'
 import WeatherTile from '@/components/WeatherTile.vue'
 import StreamInfoTile from '@/components/StreamInfoTile.vue'
-import { useStationsStore } from '@/stores/stations'
+import { useStationsStore, reconcileLastStation } from '@/stores/stations'
 import { usePlaybackStore } from '@/stores/playback'
 import { useSettingsStore } from '@/stores/settings'
 import { useSearchStore, toPlayableStation } from '@/stores/search'
@@ -267,8 +267,10 @@ onMounted(async () => {
 
   // AC4: show the last-played station's info idle (not auto-playing) once
   // settings have resolved — `restoreLastStation` only sets `currentStation`,
-  // never `isPlaying`/`play()` (spec-1-5).
-  playbackStore.restoreLastStation(settingsStore.lastStation)
+  // never `isPlaying`/`play()` (spec-1-5). Reconciled against live Favorites
+  // first (epic-1-retro item 2) so a station renamed/reordered since it was
+  // last played shows current info, not the frozen play-time snapshot.
+  playbackStore.restoreLastStation(reconcileLastStation(stationsStore.stations, settingsStore.lastStation ?? null))
 
   applyTheme()
 })

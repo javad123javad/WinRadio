@@ -9,7 +9,14 @@ import { createPinia, setActivePinia } from 'pinia'
 vi.mock('@tauri-apps/api', () => ({ invoke: vi.fn().mockResolvedValue(undefined) }))
 
 import { invoke } from '@tauri-apps/api'
-import { useStationsStore, swapFavoriteOrder, sortByFavoriteOrder, normalizeFavoriteOrder, type Station } from './stations'
+import {
+  useStationsStore,
+  swapFavoriteOrder,
+  sortByFavoriteOrder,
+  normalizeFavoriteOrder,
+  reconcileLastStation,
+  type Station,
+} from './stations'
 
 const makeStation = (id: string, favoriteOrder: number): Station => ({
   id,
@@ -18,6 +25,25 @@ const makeStation = (id: string, favoriteOrder: number): Station => ({
   isFavorite: true,
   addedAt: 0,
   favoriteOrder,
+})
+
+describe('reconcileLastStation', () => {
+  it('prefers the live Favorites copy when the last-played station is still favorited (picks up a rename/edit)', () => {
+    const stale = makeStation('a', 0)
+    const live = { ...makeStation('a', 0), name: 'Renamed A' }
+
+    expect(reconcileLastStation([live], stale)).toBe(live)
+  })
+
+  it('falls back to the frozen snapshot when the station is no longer in Favorites (accepted-risk case)', () => {
+    const stale = makeStation('a', 0)
+
+    expect(reconcileLastStation([makeStation('b', 0)], stale)).toBe(stale)
+  })
+
+  it('passes through null/undefined unchanged (nothing was ever played)', () => {
+    expect(reconcileLastStation([makeStation('a', 0)], null)).toBeNull()
+  })
 })
 
 describe('swapFavoriteOrder', () => {
