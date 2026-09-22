@@ -321,3 +321,15 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-2-search-browse-stations.md`
   summary: `search_stations` (Tauri command) is reachable with all four filter args `None`/empty via direct IPC invocation (not just through `SearchPanel.vue`'s UI, which always calls it with `hasAnyCriteria()` already true) — such a call would return up to 100 unfiltered stations rather than an empty/idle result.
   evidence: `winradio/src-tauri/src/directory.rs:192-219`'s `search_stations_at` has no early return when `params` only contains the two always-present `hidebroken`/`limit` entries. Not reachable through any current UI call site — defense-in-depth only.
+
+- source_spec: none
+  summary: Let the user pick a favorite station directly from the tray menu (e.g. a Favorites submenu), not just toggle play/pause on whatever's already loaded.
+  evidence: Split from the "Tray icon playback control" intent (2026-09-22) at the user's request — the dynamic Play/Pause label was tackled first as the smaller, lower-risk half; this station-switching half is an independently shippable follow-up.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-tray-dynamic-play-pause-label.md`
+  summary: The tray's Play/Pause menu item is never disabled/enabled based on whether a station is loaded — at fresh launch it now reads "Play" (previously static "Play/Pause"), but clicking it before any station has ever played silently no-ops (`toggle_play_pause`'s `else if let Some(station) = ...` falls through).
+  evidence: Code review found the dynamic label makes the item look more actionable than it is in this pre-existing edge case. Not caused by this change (the no-op behavior predates it), but the more accurate label makes the gap more noticeable.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-tray-dynamic-play-pause-label.md`
+  summary: `sync_tray_label` (called from `RadioPlayer::emit`) has no explicit ordering guarantee against overlapping generations — in principle a `stop` from a just-superseded generation could apply its tray label after a newer generation's `play` already did, leaving the tray stuck on "Play" while audio is actually flowing.
+  evidence: Code review flagged this; on inspection, `play()`/`stop()` each bump the generation counter with no `await` between the bump and their `emit` call, and `run_playback`'s `play` emit is itself gated on `is_current_generation` immediately before firing, so the practical window is very narrow to nonexistent — same event-ordering assumption the frontend's own listeners already rely on. Recorded as a low-confidence theoretical edge case, not verified reproducible.

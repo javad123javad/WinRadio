@@ -19,6 +19,7 @@ use tauri::{AppHandle, Manager};
 use crate::commands::Station;
 use crate::directory;
 use crate::stream_info;
+use crate::tray;
 use crate::weather;
 
 /// Backoff schedule for reconnect attempts after a stream fails or drops:
@@ -171,6 +172,20 @@ impl RadioPlayer {
     fn emit<S: Serialize + Clone>(&self, event: &str, payload: S) {
         if let Some(handle) = self.app_handle.lock().as_ref() {
             let _ = handle.emit_all(event, payload);
+            Self::sync_tray_label(handle, event);
+        }
+    }
+
+    /// Keeps the tray's "Play"/"Pause" menu item in sync with the same
+    /// playback-state events the frontend's `playback.ts` store already
+    /// listens to (mirrors that event->state mapping on the Rust side,
+    /// since the tray API and the Vue store are two separate runtimes with
+    /// no shared source of truth) — every trigger source (tray click,
+    /// transport bar, media key) funnels through `emit`, so this one call
+    /// site covers all of them.
+    fn sync_tray_label(handle: &AppHandle, event: &str) {
+        if let Some(title) = tray_label_for(event) {
+            let _ = handle.tray_handle().get_item(tray::PLAY_PAUSE_ITEM_ID).set_title(title);
         }
     }
 
@@ -704,6 +719,20 @@ fn should_emit_tile_update(last_emitted_for: &mut Option<String>, station_id: &s
     true
 }
 
+/// Maps a playback-state event name to the tray's Play/Pause item title, or
+/// `None` for an event this item doesn't care about (e.g. `metadata-updated`).
+/// `stop`/`reconnecting`/`playback-error` all map to "Play" since none of
+/// them mean audio is actually flowing right now — there is no distinct
+/// "paused" state today (`toggle_play_pause` stops, it doesn't pause); if one
+/// is ever added, this match must be revisited.
+fn tray_label_for(event: &str) -> Option<&'static str> {
+    match event {
+        "play" => Some("Pause"),
+        "stop" | "reconnecting" | "playback-error" => Some("Play"),
+        _ => None,
+    }
+}
+
 /// Generic retry helper: tries `attempt` once; on failure, calls
 /// `on_retry(index)` and retries after each of `delays` in turn (a zero
 /// delay is not slept on). Returns the first success, or the last error once
@@ -827,6 +856,24 @@ mod tests {
         let mut last = Some("station-a".to_string());
         assert!(should_emit_tile_update(&mut last, "station-b"));
         assert_eq!(last, Some("station-b".to_string()));
+    }
+
+    #[test]
+    fn tray_label_for_reads_pause_once_actually_playing() {
+        assert_eq!(tray_label_for("play"), Some("Pause"));
+    }
+
+    #[test]
+    fn tray_label_for_reads_play_for_every_non_playing_state() {
+        assert_eq!(tray_label_for("stop"), Some("Play"));
+        assert_eq!(tray_label_for("reconnecting"), Some("Play"));
+        assert_eq!(tray_label_for("playback-error"), Some("Play"));
+    }
+
+    #[test]
+    fn tray_label_for_ignores_events_the_tray_item_does_not_care_about() {
+        assert_eq!(tray_label_for("metadata-updated"), None);
+        assert_eq!(tray_label_for("location-updated"), None);
     }
 
     #[tokio::test]
