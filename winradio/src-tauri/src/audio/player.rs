@@ -96,8 +96,59 @@ const WEATHER_UNAVAILABLE: &str = "Weather unavailable";
 /// info event, mirroring `LOCATION_UNKNOWN`/`WEATHER_UNAVAILABLE` above.
 const STREAM_INFO_UNAVAILABLE: &str = "unavailable";
 
+/// A `Send + Sync` handle to a resource whose owner (e.g. `rodio::OutputStream`,
+/// which is `!Send`/`!Sync`) lives on its own dedicated thread. Dropping this
+/// wakes that thread, which exits and drops the resource, releasing it.
+struct ParkedOwner<H> {
+    handle: H,
+    _shutdown: std_mpsc::Sender<()>,
+}
+
+type OutputDevice = ParkedOwner<OutputStreamHandle>;
+
+/// Creates the `!Send` resource `R` on a fresh thread and keeps it alive there
+/// until the returned `ParkedOwner` is dropped; only the `Send` handle `H`
+/// crosses back out. Generic over the resource so the drop-releases-resource
+/// contract is unit-testable without real audio hardware.
+fn spawn_parked_owner<R, H, F>(open: F) -> Result<ParkedOwner<H>, String>
+where
+    H: Send + 'static,
+    F: FnOnce() -> Result<(R, H), String> + Send + 'static,
+{
+    let (tx, rx) = std_mpsc::channel();
+    let (shutdown_tx, shutdown_rx) = std_mpsc::channel::<()>();
+    std::thread::spawn(move || match open() {
+        Ok((_resource, handle)) => {
+            let _ = tx.send(Ok(handle));
+            // Blocks until the `ParkedOwner` (and with it `shutdown_tx`) is
+            // dropped, keeping `_resource` alive exactly that long.
+            let _ = shutdown_rx.recv();
+        }
+        Err(e) => {
+            let _ = tx.send(Err(e));
+        }
+    });
+    let handle = rx
+        .recv()
+        .map_err(|_| "Audio output thread failed to start".to_string())??;
+    Ok(ParkedOwner {
+        handle,
+        _shutdown: shutdown_tx,
+    })
+}
+
+/// Opens whatever the system's *current* default output device is right now.
+fn open_default_output() -> Result<OutputDevice, String> {
+    spawn_parked_owner(|| OutputStream::try_default().map_err(|e| e.to_string()))
+}
+
+const NO_AUDIO_DEVICE: &str = "Couldn't play this station: no audio output device available";
+
 pub struct RadioPlayer {
-    stream_handle: OutputStreamHandle,
+    // Re-opened on every `play()` (see there): a stream opened once at startup
+    // keeps pointing at the device that was default *then*, and goes silent
+    // for good if that device (e.g. a USB headset) is unplugged.
+    output: Mutex<OutputDevice>,
     sink: Arc<Mutex<Option<Arc<Sink>>>>,
     current_station: Arc<Mutex<Option<Station>>>,
     volume: Arc<Mutex<f32>>,
@@ -128,31 +179,11 @@ impl RadioPlayer {
         // `rodio::OutputStream` is `!Send`/`!Sync` (it wraps a platform audio
         // handle), but `RadioPlayer` is shared across threads via
         // `Arc<RadioPlayer>` and Tauri's async command state, which requires
-        // `Send + Sync`. So the stream is created and kept alive forever on a
-        // dedicated, parked OS thread; only the `Send + Sync` `OutputStreamHandle`
-        // (used to build `Sink`s) crosses back out.
-        let (tx, rx) = std_mpsc::channel();
-        std::thread::spawn(move || match OutputStream::try_default() {
-            Ok((_stream, handle)) => {
-                let _ = tx.send(Some(handle));
-                // Park forever, keeping `_stream` alive for the process lifetime.
-                loop {
-                    std::thread::park();
-                }
-            }
-            Err(_) => {
-                let _ = tx.send(None);
-            }
-        });
-
-        let stream_handle = rx
-            .recv()
-            .ok()
-            .flatten()
-            .expect("Failed to create audio output stream");
+        // `Send + Sync` — see `spawn_parked_owner`.
+        let output = open_default_output().expect("Failed to create audio output stream");
 
         Self {
-            stream_handle,
+            output: Mutex::new(output),
             sink: Arc::new(Mutex::new(None)),
             current_station: Arc::new(Mutex::new(None)),
             volume: Arc::new(Mutex::new(initial_volume.clamp(0.0, 1.0))),
@@ -276,6 +307,23 @@ impl RadioPlayer {
 
         *self.current_station.lock() = Some(station.clone());
         *self.metadata.lock() = None;
+
+        // Re-bind to the system's current default output device on every
+        // play, so Stop→Play recovers after a USB/Bluetooth device was
+        // unplugged or the default changed. Replacing `output` drops the old
+        // stream, which also unblocks any sink still stuck on a dead device.
+        match open_default_output() {
+            Ok(device) => *self.output.lock() = device,
+            Err(_) => {
+                self.emit(
+                    "playback-error",
+                    PlaybackErrorPayload {
+                        reason: NO_AUDIO_DEVICE.to_string(),
+                    },
+                );
+                return Ok(());
+            }
+        }
 
         tokio::spawn(Self::run_playback(self, station, gen));
 
@@ -613,7 +661,7 @@ impl RadioPlayer {
         });
 
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
-        let stream_handle = self.stream_handle.clone();
+        let stream_handle = self.output.lock().handle.clone();
         let sink_slot = self.sink.clone();
         let volume = *self.volume.lock();
         // Cloned so the blocking closure can re-check the generation right
@@ -856,6 +904,57 @@ mod tests {
         let mut last = Some("station-a".to_string());
         assert!(should_emit_tile_update(&mut last, "station-b"));
         assert_eq!(last, Some("station-b".to_string()));
+    }
+
+    struct SetOnDrop(Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for SetOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn wait_until(flag: &std::sync::atomic::AtomicBool) -> bool {
+        for _ in 0..200 {
+            if flag.load(Ordering::SeqCst) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    #[test]
+    fn parked_owner_keeps_the_resource_alive_until_dropped_then_releases_it() {
+        let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let released_for_open = released.clone();
+        let owner = spawn_parked_owner(move || Ok((SetOnDrop(released_for_open), 42u8))).unwrap();
+
+        assert_eq!(owner.handle, 42);
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(!released.load(Ordering::SeqCst), "must stay alive while the owner exists");
+
+        drop(owner);
+        assert!(wait_until(&released), "dropping the owner must release the resource");
+    }
+
+    #[test]
+    fn replacing_a_parked_owner_releases_the_old_resource_and_keeps_the_new_one() {
+        let old_released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let new_released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (old_flag, new_flag) = (old_released.clone(), new_released.clone());
+
+        let mut slot = spawn_parked_owner(move || Ok((SetOnDrop(old_flag), 1u8))).unwrap();
+        slot = spawn_parked_owner(move || Ok((SetOnDrop(new_flag), 2u8))).unwrap();
+
+        assert!(wait_until(&old_released), "the replaced device must be released");
+        assert_eq!(slot.handle, 2);
+        assert!(!new_released.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn parked_owner_surfaces_an_open_failure_instead_of_hanging() {
+        let result = spawn_parked_owner::<(), u8, _>(|| Err("no device".to_string()));
+        assert_eq!(result.err(), Some("no device".to_string()));
     }
 
     #[test]
